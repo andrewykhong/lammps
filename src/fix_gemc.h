@@ -13,7 +13,7 @@
 
 #ifdef FIX_CLASS
 // clang-format off
-FixStyle(gcmc,FixGEMC);
+FixStyle(gemc,FixGEMC);
 // clang-format on
 #else
 
@@ -50,11 +50,13 @@ class FixGEMC : public Fix {
 
   // for evaluating probability
 
+  int overlap_flag; // check for overlap?
+  double overlap_cutoffsq; // check for max cutoff 
   double beta; // 1 / (boltzmann * temperature)
   double energy_stored; // current potential energy
   class Compute *c_pe; // compute to get full potential energy
 
-  // for determinging which move to make
+  // for determining which move to make
 
   double nmoves; // total MC moves (translate/rotate + exchange + volume)
   // cummulative probabilites
@@ -62,6 +64,17 @@ class FixGEMC : public Fix {
   double pc_volume; // probability MV move is a volume change
   double pc_translate; // probability MC move is a translation
   double pc_rotate; // probability MC move is a rotation
+
+  // for tracking how many attempts/successes
+
+  int ntranslation_attempts;
+  int ntranslation_successes;
+  int nrotation_attempts;
+  int nrotation_successes;
+  int nexchange_attempts;
+  int nexchange_successes;
+  int nvolume_attempts;
+  int nvolume_successes;
 
   // particle - related props
 
@@ -83,6 +96,7 @@ class FixGEMC : public Fix {
   double xlo, ylo, zlo; // lower domain bounds
   double xhi, yhi, zhi; // upper domain bounds
   double *sublo, *subhi; // sub domain bounds
+  double xhi_tmp, yhi_tmp, zhi_tmp; // temporary upper domain bounds
 
   // for communication
 
@@ -93,9 +107,7 @@ class FixGEMC : public Fix {
   double *commbuf;
   MPI_Comm comm_replica; // for communication between partitions
 
-  class RanPark *random_vol; // sync'd RNG between boxes for volume MC move
-  class RanPark *random_ex; // sync'd RNG between boxes for exchange MC move
-  class RanPark *random_mc; // which type fo MC move to make
+  class RanPark *random_sync; // sync'd RNG between boxes
   class RanPark *random; // general purpose RNG for each box (not sync'd)
 
   // subroutines //
@@ -112,8 +124,9 @@ class FixGEMC : public Fix {
 
   // for MC volume moves (always full)
 
-  void attempt_volume_change();
-  void scale_positions(const double, const double, const double, const double);
+  void attempt_volume_change_full();
+  void scale_positions(const double);
+  void unscale_positions(const double);
 
   // for MC exchange moves
 

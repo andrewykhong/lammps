@@ -40,20 +40,20 @@ static constexpr double MAXENERGYTEST = 1.0e50;
 /* ----------------------------------------------------------------------
   Shrink/expand boxes (always requires full energy)
 ------------------------------------------------------------------------- */
-void FixGEMC::attempt_volume_change()
+void FixGEMC::attempt_volume_change_full()
 {
+  nvolume_attempts++;
   // current volume
-  double Lx = domain->boxhi[0]-domain->boxlo[0];
-  double Ly = domain->boxhi[1]-domain->boxlo[1];
-  double Lz = domain->boxhi[2]-domain->boxlo[2];
-
+  double Lx = xhi-xlo;
+  double Ly = yhi-ylo;
+  double Lz = zhi-zlo;
   double volume = Lx*Ly*Lz;
 
   // sample volume change from world 0 comm 0
   double dvolume;
   if (mycomm == 0) {
     double min_volume;  
-    MPI_Allreduce(&min_volume, &volume, 1, MPI_DOUBLE, MPI_MIN, comm_replica);
+    MPI_Allreduce(&volume, &min_volume, 1, MPI_DOUBLE, MPI_MIN, comm_replica);
     // have one world sample volume change
     if (myworld == 0) {
       dvolume = 2.0*min_volume;
@@ -70,21 +70,41 @@ void FixGEMC::attempt_volume_change()
   // broadcast volume change to all worlds
   MPI_Bcast(&dvolume, 1, MPI_DOUBLE, 0, world);
 
-  // attempt to change volume
-  double scale_length = pow((volume-dvolume)/volume, 1/domain->dimension);
+  // DEBUG : Check that each comm in each partition has corect volume + volume change
+  //printf("xhi: %g, %g, %g\n", xhi, yhi, zhi);
+  //printf("%i/%i - dvolume: %g / %g\n", myworld, mycomm, dvolume, volume);
+  //error->one(FLERR,"ck");
 
+  // attempt to change volume
+  double fvolume = (volume-dvolume)/volume;
+  if (fvolume < 0) error->one(FLERR,"Negative volume found in fix gemc");
+  double scale_length = pow(fvolume, 1.0/domain->dimension);
+
+  // DEBUG check that candidate volume move is reasonable
+  //printf("%g->%g -> %g\n", volume, dvolume, fvolume);
+  //printf("scale_length: %g\n", scale_length);
+
+  // shrink box toward lower corner
+  // lower box coordinates always same
   // find center point of box
-  double xm = (domain->boxhi[0]+domain->boxlo[0])*0.5;
-  double ym = (domain->boxhi[1]+domain->boxlo[1])*0.5;
-  double zm = (domain->boxhi[2]+domain->boxlo[2])*0.5;
+  xhi_tmp = xlo + Lx*scale_length;
+  yhi_tmp = ylo + Ly*scale_length;
+  zhi_tmp = zlo + Lz*scale_length;
+
+  // check new domain size sync'd
+  //printf("%i/%i - scale: %g\n", myworld, mycomm, scale_length);
+  //printf("xhi: %g, %g, %g\n", xhi_tmp, yhi_tmp, zhi_tmp);
+  //error->one(FLERR,"ck");
 
   // change in potential due to volume change
-  double dU_volume = atom->nlocal*force->boltz*box_temp*
-              log((volume+dvolume)/volume);
+  // TODO : should include both local and ghost? (is total computed correctly)
+  double dU_volume = natom_total*force->boltz*box_temp*log(fvolume);
   // current system energy
   double energy_before = energy_stored;
+
   // scale the particle positions (will revert if not accepted)
-  scale_positions(xm,ym,zm,scale_length);
+  scale_positions(scale_length);
+  //error->one(FLERR,"ck after scale");
   // (possible) future system energy
   double energy_after = energy_full();
 
@@ -93,49 +113,40 @@ void FixGEMC::attempt_volume_change()
   if (mycomm == 0) {
     double idU = energy_after-energy_before-dU_volume;
     // sum change in full energy across each box
-    MPI_Allreduce(&dU, &idU, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
+    MPI_Allreduce(&idU, &dU, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
   }
-  // bcast decision to rest of world
+  // bcast potential change to rest of world
   MPI_Bcast(&dU, 1, MPI_DOUBLE, 0, world);
+
+  // check potenital change sync'd
+  //printf("%i/%i - %g\n", myworld, mycomm, dU);
 
   // evaluate probability
   double prob = MIN(exp(-beta*dU),1.0);
   // scale back particle positions if volume change rejected
   // random_volume should give same number across all procs across boxes
-  if (prob < random_vol->uniform()) 
-    scale_positions(xm,ym,zm,1.0/scale_length);
-  else
-  {
+  if (prob < random_sync->uniform()) {
+    // revert positions
+    unscale_positions(scale_length);
+    // TODO : reneighbor here?
+    printf("fail!\n");
+  } else {
+    nvolume_successes++;
     // store new energy
     energy_stored = energy_after;
 
     // shrink/expand box lengths wrt to center
-    domain->boxhi[0] = xm + Lx*0.5*scale_length;
-    domain->boxhi[1] = ym + Ly*0.5*scale_length;
-    domain->boxhi[2] = zm + Lz*0.5*scale_length;
-
-    domain->boxlo[0] = xm - Lx*0.5*scale_length;
-    domain->boxlo[1] = ym - Ly*0.5*scale_length;
-    domain->boxlo[2] = zm - Lz*0.5*scale_length;
-
-    domain->boxhi[0] = xm + Lx*0.5*scale_length;
-    domain->boxhi[1] = ym + Ly*0.5*scale_length;
-    domain->boxhi[2] = zm + Lz*0.5*scale_length;
-
-    domain->boxlo[0] = xm - Lx*0.5*scale_length;
-    domain->boxlo[1] = ym - Ly*0.5*scale_length;
-    domain->boxlo[2] = zm - Lz*0.5*scale_length;
+    domain->boxhi[0] = xhi_tmp;
+    domain->boxhi[1] = yhi_tmp;
+    domain->boxhi[2] = zhi_tmp;
 
     // reset box and subbox dimensions
     domain->set_global_box();
     domain->set_local_box();
 
-    // reacquire domain bounds
-    xlo = domain->boxlo[0];
+    // reacquire upper domain bounds
     xhi = domain->boxhi[0];
-    ylo = domain->boxlo[1];
     yhi = domain->boxhi[1];
-    zlo = domain->boxlo[2];
     zhi = domain->boxhi[2];
 
     // reacquire subdomain bounds
@@ -146,7 +157,7 @@ void FixGEMC::attempt_volume_change()
       sublo = domain->sublo;
       subhi = domain->subhi;
     }
-
+    printf("success!\n");
   }
 }
 
@@ -155,6 +166,8 @@ void FixGEMC::attempt_volume_change()
 ------------------------------------------------------------------------- */
 void FixGEMC::attempt_atomic_exchange_full()
 {
+  nexchange_attempts++;
+
   // choose which box sends particle and which box receives
   int sender;
   if (mycomm == 0) {
@@ -314,6 +327,7 @@ void FixGEMC::attempt_atomic_exchange_full()
   if (sender) {
     // delete iatom
     if (success) {
+      nexchange_successes++;
       if (iatom >= 0) {
         atom->avec->copy(atom->nlocal-1,iatom,1);
         atom->nlocal--;
@@ -334,6 +348,7 @@ void FixGEMC::attempt_atomic_exchange_full()
   } else {
     // accept newly inserted iatomthere
     if (success) {
+      nexchange_successes++;
       energy_stored = energy_after;
     // remove newly inserted iatom
     } else {
@@ -354,6 +369,8 @@ void FixGEMC::attempt_atomic_exchange_full()
 
 void FixGEMC::attempt_atomic_translation_full()
 {
+  ntranslation_attempts++;
+
   if (natom_local == 0) return;
 
   double energy_before = energy_stored;
@@ -396,13 +413,22 @@ void FixGEMC::attempt_atomic_translation_full()
   }
 
   double energy_after = energy_full();
+  //printf("%i -> %i :: %i : %4.3e -> %4.3e\n",
+  //  myworld, mycomm, i, energy_before, energy_after);
 
+  // DEBUG: Check if RNG sync'd 
+  //for (int r = 0; r < 8; r++) random_sync->uniform();
+  //for (int r = 0; r < 12; r++) random->uniform();
+  //printf("%i, %i rng: %g - %g\n",
+  //  myworld, mycomm, random_sync->uniform(), random->uniform());
+
+  // TODO : More thorough testing that successes and fails sync'd
   if (energy_after < MAXENERGYTEST &&
-      random->uniform() <
+      random_sync->uniform() <
       exp(beta*(energy_before - energy_after))) {
     energy_stored = energy_after;
   } else {
-
+    ntranslation_successes++;
     tagint tmptag_all;
     MPI_Allreduce(&tmptag,&tmptag_all,1,MPI_LMP_TAGINT,MPI_MAX,world);
 
@@ -460,7 +486,7 @@ void FixGEMC::attempt_molecule_translation_full()
   double energy_after = energy_full();
 
   if (energy_after < MAXENERGYTEST &&
-      random->uniform() <
+      random_sync->uniform() <
       exp(beta*(energy_before - energy_after))) {
     energy_stored = energy_after;
   } else {
@@ -474,5 +500,91 @@ void FixGEMC::attempt_molecule_translation_full()
     }
   }
   update_gas_atoms_list();
+}
+
+/* ----------------------------------------------------------------------
+  Scale new particle positions according to volume change
+------------------------------------------------------------------------- */
+void FixGEMC::scale_positions(const double scale)
+{
+  double **x = atom->x;
+  // TODO : should I scale ghost atom positions? (probably?)
+  for (int i = 0; i < natom_total; i++) {
+    x[i][0] = (x[i][0]-xlo)*scale+xlo;
+    x[i][1] = (x[i][1]-ylo)*scale+ylo;
+    x[i][2] = (x[i][2]-zlo)*scale+zlo;
+
+    // check if atoms in right position
+    // TODO : should I check ghost atoms?
+    if (i < natom_local) {
+      if (x[i][0] > xhi_tmp || x[i][0] < xlo ||
+          x[i][1] > yhi_tmp || x[i][1] < ylo ||
+          x[i][2] > zhi_tmp || x[i][2] < zlo) {
+        printf("%i - %g, %g, %g\n",
+          i, x[i][0], x[i][1], x[i][2]);
+        error->one(FLERR,"Updated atom position outside of box");
+      }
+    }
+  }
+}
+
+/* ----------------------------------------------------------------------
+  Revert to old particle positions according to volume change
+------------------------------------------------------------------------- */
+void FixGEMC::unscale_positions(const double scale)
+{
+  double **x = atom->x;
+  // TODO : should I scale ghost atom positions? (probably?)
+  for (int i = 0; i < natom_total; i++) {
+    x[i][0] = (x[i][0]-xlo)/scale+xlo;
+    x[i][1] = (x[i][1]-ylo)/scale+ylo;
+    x[i][2] = (x[i][2]-zlo)/scale+zlo;
+
+    // check if atoms in right position
+    // TODO : should I check ghost atoms?
+    if (i < natom_local) {
+      if (x[i][0] > xhi || x[i][0] < xlo ||
+          x[i][1] > yhi || x[i][1] < ylo ||
+          x[i][2] > zhi || x[i][2] < zlo) {
+        printf("%i - %g, %g, %g\n",
+          i, x[i][0], x[i][1], x[i][2]);
+        error->one(FLERR,"Reverted atom position outside of box");
+      }
+    }
+  }
+}
+
+/* ----------------------------------------------------------------------
+------------------------------------------------------------------------- */
+
+int FixGEMC::pick_random_gas_atom()
+{
+  int i = -1;
+  int iwhichglobal = static_cast<int> (natom_total*random_sync->uniform());
+  if ((iwhichglobal >= natom_lower) &&
+      (iwhichglobal < natom_lower + natom_local)) {
+    i = iwhichglobal - natom_lower;
+  }
+
+  return i;
+}
+
+/* ----------------------------------------------------------------------
+------------------------------------------------------------------------- */
+
+tagint FixGEMC::pick_random_gas_molecule()
+{
+  int iwhichglobal = static_cast<int> (natom_local*random_sync->uniform());
+  tagint gas_molecule_id = 0;
+  if ((iwhichglobal >= natom_lower) &&
+      (iwhichglobal < natom_lower + natom_local)) {
+    gas_molecule_id = iwhichglobal - natom_lower;
+  }
+
+  tagint gas_molecule_id_all = 0;
+  MPI_Allreduce(&gas_molecule_id,&gas_molecule_id_all,1,
+                MPI_LMP_TAGINT,MPI_MAX,world);
+
+  return gas_molecule_id_all;
 }
 

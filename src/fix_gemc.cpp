@@ -12,6 +12,10 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
+// Gen Questions:
+// 1) What is a tagint?
+// 2) What are all the nullptrs in the definition of a fix
+
 /* ----------------------------------------------------------------------
    Contributing author: Paul Crozier, Aidan Thompson (SNL)
 ------------------------------------------------------------------------- */
@@ -48,23 +52,48 @@
 using namespace LAMMPS_NS;
 using namespace FixConst;
 
+// TODO :General questions
+// 1) what is tagint
+// 2) what are all the nullptrs in object creation and which are needed
+// 3) where and how often need to reneighbor (after each translate/exchange?)
+//    currently reneighbor each energy_full call
+
 // large energy value used to signal overlap
 
 static constexpr double MAXENERGYSIGNAL = 1.0e100;
 
+// this must be lower than MAXENERGYSIGNAL
+// by a large amount, so that it is still
+// less than total energy when negative
+// energy contributions are added to MAXENERGYSIGNAL
+
+static constexpr double MAXENERGYTEST = 1.0e50;
+
 /* ---------------------------------------------------------------------- */
 
 // not sure what all these nullptrs are for
-FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg), commbuf(nullptr)
+FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
 {
-
-  if (narg < 12) utils::missing_cmd_args(FLERR, "fix gcmc", error);
-
+  if (narg < 12) utils::missing_cmd_args(FLERR, "fix gemc", error);
   // must have only two boxes
 
   if (universe->nworlds != 2) error->universe_all(FLERR, "Must use exactly two partitions");
 
-  // required args
+  // various fix flags (partial copy from gcmc)
+  time_integrate = 0; // do not time integrate (use only MC moves)
+  global_freq = 1; // NOT SURE
+  time_depend = 1; // NOT SURE
+  // box size changes with volume MC moves
+  box_change |= BOX_CHANGE_X;
+  box_change |= BOX_CHANGE_Y;
+  box_change |= BOX_CHANGE_Z;
+
+  // set up reneighboring
+
+  force_reneighbor = 1; // TODO: need this for pre-exchange?
+  next_reneighbor = update->ntimestep + 1;
+
+  // required user args
 
   nevery = utils::inumeric(FLERR,     arg[3], false, lmp);
   ntranslate = utils::inumeric(FLERR, arg[4], false, lmp);
@@ -76,15 +105,25 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg), commb
   max_volume = utils::numeric(FLERR,  arg[10], false, lmp);
   seed = utils::inumeric(FLERR,       arg[11], false, lmp);
 
+  // DEBUG : Test if inputs correct
+  //printf("arg: %i, %i, %i\n", nevery, ntranslate, nrotate);
+  //printf("arg: %i, %i, %g\n", nexchange, nvolume, box_temp);
+  //printf("arg: %g, %g, %i\n", displace, max_volume, seed);
+
   // comm_replica = communicator between proc 0s across boxes
 
   int color = comm->me;
   MPI_Comm_split(universe->uworld, color, 0, &comm_replica);
 
+  // DEBUG : Test communication set up correct
+  //if (color == 0)
+  //  printf("myworld: %i\n", universe->iworld);
+  //else
+  //  printf("rest of us: %i\n", comm->me);
+
   // same RNG for each replica for volume MC moves
-  random = new RanPark(lmp,seed+universe->iworld); // general purpose rng
-  random_mc = new RanPark(lmp,seed+2); // sync which type of move to make
-  random_vol = new RanPark(lmp,seed+3); // sync volume changes
+  random = new RanPark(lmp,seed+3.0*universe->iworld+7.0*color); // general purpose rng
+  random_sync = new RanPark(lmp,seed); // sync which type of move to make
 
   // read options from end of input line
 
@@ -145,6 +184,9 @@ void FixGEMC::init()
     pc_rotate = 0.0;
   }
 
+  // DEBUG : Test if probabilities set up correctly
+  //printf("%g, %g, %g, %g\n", pc_exchange, pc_volume, pc_translate, pc_rotate);
+
   // set to full energy?
 
   if (!full_flag) {
@@ -172,13 +214,6 @@ void FixGEMC::init()
   // get domain dim
 
   triclinic_flag = domain->triclinic;
-
-  xlo = domain->boxlo[0];
-  xhi = domain->boxhi[0];
-  ylo = domain->boxlo[1];
-  yhi = domain->boxhi[1];
-  zlo = domain->boxlo[2];
-  zhi = domain->boxhi[2];
 
   // get subdomain
   if (triclinic_flag) {
@@ -220,6 +255,23 @@ void FixGEMC::pre_exchange()
 
   if (next_reneighbor != update->ntimestep) return;
 
+  // get domain dims
+  xlo = domain->boxlo[0];
+  xhi = domain->boxhi[0];
+  ylo = domain->boxlo[1];
+  yhi = domain->boxhi[1];
+  zlo = domain->boxlo[2];
+  zhi = domain->boxhi[2];
+
+  // get subdomain
+  if (triclinic_flag) {
+    sublo = domain->sublo_lamda;
+    subhi = domain->subhi_lamda;
+  } else {
+    sublo = domain->sublo;
+    subhi = domain->subhi;
+  }
+
   // three steps in GEMC:
   // 1) translate particles within each box
   // 2) exchange particles between boxes
@@ -230,26 +282,34 @@ void FixGEMC::pre_exchange()
   // do translations/rotations first
   // no communication needed between boxes
 
+  update_gas_atoms_list();
   if (full_flag) {
     energy_stored = energy_full();
-    //if (overlap_flag && energy_stored > MAXENERGYTEST)
-    //    error->warning(FLERR,"Energy of old configuration in "
-    //                   "fix gcmc is > MAXENERGYTEST.");
+    if (overlap_flag && energy_stored > MAXENERGYTEST)
+        error->warning(FLERR,"fix gemc: Energy of old configuration > MAXENERGYTEST");
 
     for (int i = 0; i < nmoves; i++) {
-      double imove = random_mc->uniform();
+      double imove = random_sync->uniform();
+      // DEBUG : Check if RNG sync'd
+      //printf("%i - %i; imove: %g\n", myworld, mycomm, imove);
+
       if (molecule_flag) { // TODO : add molecule counterpart
         if (imove < pc_exchange) ;//attempt_molecule_exchange_full();
-        else if (imove < pc_volume) attempt_volume_change();
+        else if (imove < pc_volume) ;//attempt_volume_change_full();
         else if (imove < pc_translate) ;//attempt_molecule_translation_full();
         else ;//attempt_molecule_rotation_full();
       } else {
-        if (imove < pc_exchange) attempt_atomic_exchange_full();
-        else if (imove < pc_volume) attempt_volume_change();
-        else attempt_atomic_translation_full();
+        attempt_volume_change_full();
+        //if (imove < pc_exchange) attempt_atomic_exchange_full();
+        //else if (imove < pc_volume) attempt_volume_change_full();
+        //else attempt_atomic_translation_full();
       }
     }
   } // TODO: Add not full option
+
+  // update next time to call
+  next_reneighbor = update->ntimestep + nevery;
+  error->one(FLERR,"ck step!");
 }
 
 /* ----------------------------------------------------------------------
@@ -269,54 +329,6 @@ void FixGEMC::options(int narg, char **arg)
 }
 
 /* ----------------------------------------------------------------------
-  Scale new particle positions according to volume change
-------------------------------------------------------------------------- */
-void FixGEMC::scale_positions(const double xm, const double ym, const double zm, const double scale)
-{
-  double **x = atom->x;
-
-  for (int i = 0; i < natom_total; i++) {
-    x[i][0] = (x[i][0]-xm)/scale+xm;
-    x[i][1] = (x[i][1]-ym)/scale+ym;
-    x[i][2] = (x[i][2]-zm)/scale+zm;
-  }
-}
-
-/* ----------------------------------------------------------------------
-------------------------------------------------------------------------- */
-
-int FixGEMC::pick_random_gas_atom()
-{
-  int i = -1;
-  int iwhichglobal = static_cast<int> (natom_total*random->uniform());
-  if ((iwhichglobal >= natom_lower) &&
-      (iwhichglobal < natom_lower + natom_local)) {
-    i = iwhichglobal - natom_lower;
-  }
-
-  return i;
-}
-
-/* ----------------------------------------------------------------------
-------------------------------------------------------------------------- */
-
-tagint FixGEMC::pick_random_gas_molecule()
-{
-  int iwhichglobal = static_cast<int> (natom_local*random->uniform());
-  tagint gas_molecule_id = 0;
-  if ((iwhichglobal >= natom_lower) &&
-      (iwhichglobal < natom_lower + natom_local)) {
-    gas_molecule_id = iwhichglobal - natom_lower;
-  }
-
-  tagint gas_molecule_id_all = 0;
-  MPI_Allreduce(&gas_molecule_id,&gas_molecule_id_all,1,
-                MPI_LMP_TAGINT,MPI_MAX,world);
-
-  return gas_molecule_id_all;
-}
-
-/* ----------------------------------------------------------------------
    update per-proc atom count
    assume all atoms are candidates for MC moves
 ------------------------------------------------------------------------- */
@@ -330,6 +342,10 @@ void FixGEMC::update_gas_atoms_list()
   MPI_Allreduce(&natom_local,&natom_total,1,MPI_INT,MPI_SUM,world);
   MPI_Scan(&natom_local,&natom_lower,1,MPI_INT,MPI_SUM,world);
   natom_lower -= natom_local;
+
+  // DEBUG : Check atom list consistent between worlds/procs
+  //printf("%i - %i; natm: %i - %i\n", myworld, mycomm, natom_lower, natom_local);
+  //error->one(FLERR,"ck atom list");
 }
 
 /* ----------------------------------------------------------------------
@@ -343,20 +359,21 @@ double FixGEMC::energy_full()
   if (triclinic_flag) domain->x2lamda(atom->nlocal);
   domain->pbc();
   comm->exchange();
-  atom->nghost = 0; // ??
+  //atom->nghost = 0; // TODO : What is this for?
   comm->borders();
   if (triclinic_flag) domain->lamda2x(atom->nlocal+atom->nghost);
   if (modify->n_pre_neighbor) modify->pre_neighbor();
   neighbor->build(1);
+
   int eflag = 1;
   int vflag = 0;
 
   // if overlap check requested, if overlap,
   // return signal value for energy
 
-  // TODO : TEMPORARY
-  int overlap_flag = 1; // manually call for now
-  double overlap_cutoffsq = 0.0;
+  // TODO : temporarily always have overlap check on
+  overlap_flag = 1; // manually call for now
+  overlap_cutoffsq = 0.0;
 
   if (overlap_flag) {
     int overlaptestall;
