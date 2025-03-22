@@ -181,56 +181,97 @@ void FixGEMC::attempt_atomic_exchange_full()
   }
   MPI_Bcast(&sender, 1, MPI_INT, 0, world);
 
-  // get change in potential energy
-  double dU = 0.0;
-  double energy_after;
-  double energy_before = energy_stored;
+  //printf("%i/%i - sender? %i\n", myworld, mycomm, sender);
 
-  // first choose which atom to send and delete
-  // temporary store
+  // atom to delete/insert
+  int iatom;
+
+  // these are temporarily stored
   double q_iatom;
   int mask_iatom;
-
-  int iatom;
   int iatom_type; // record atom type
-  double v_iatom[3];
+  double vx,vy,vz;
+
+  q_iatom = 0.0;
+  iatom_type = mask_iatom = 0;
+  vx = vy = vz = 0.0;
   if (sender) {
     // pick one atom randomly from all atoms in system
     // only one proc will actually delete atom
     update_gas_atoms_list();
     iatom = pick_random_gas_atom();
-    double idU = 0.0;
 
+    //printf("%i/%i - atom? %i\n", myworld, mycomm, iatom);
+
+    double my_q_iatom = 0.0;
+    int my_mask_iatom = 0;
+    int my_iatom_type = 0;
+    double my_vx,my_vy,my_vz;
+    my_vx = my_vy = my_vz = 0.0;
     if (iatom >= 0) {
       mask_iatom = atom->mask[iatom]; // store particle mask
-      iatom_type = atom->type[iatom]; // for insertion
+      my_iatom_type = atom->type[iatom]; // for insertion
       atom->mask[iatom] = exclusion_group_bit;
       // check if charged
-      if (iatom >= 0 && q_flag) {
+      if (q_flag) {
         q_iatom = atom->q[iatom];
         atom->q[iatom] = 0.0;
       }
 
       // store velocity
-      v_iatom[0] = atom->v[iatom][0];
-      v_iatom[1] = atom->v[iatom][1];
-      v_iatom[2] = atom->v[iatom][2];
+      my_vx = atom->v[iatom][0];
+      my_vy = atom->v[iatom][1];
+      my_vz = atom->v[iatom][2];
 
       if (force->kspace) force->kspace->qsum_qsq();
       if (force->pair->tail_flag) force->pair->reinit();
-      energy_after = energy_full();
-      idU = energy_after-energy_before;
     }
-    MPI_Allreduce(&idU, &dU, 1, MPI_DOUBLE, MPI_SUM, world);
+
+    //printf("%i/%i - atom_type? %i\n", myworld, mycomm, my_iatom_type);
+    //printf("%i/%i - v? %g,%g,%g\n",
+    //  myworld, mycomm, my_vx, my_vy, my_vz);
+
+    // have comm 0 reduce since it may not be the one deleting
+    MPI_Reduce(&my_iatom_type, &iatom_type, 1, MPI_INT, MPI_SUM, 0, world);
+    MPI_Reduce(&my_mask_iatom, &mask_iatom, 1, MPI_INT, MPI_SUM, 0, world);
+    MPI_Reduce(&my_q_iatom,    &q_iatom,    1, MPI_DOUBLE, MPI_SUM, 0, world);
+    MPI_Reduce(&my_vx, &vx, 1, MPI_DOUBLE, MPI_SUM, 0, world);
+    MPI_Reduce(&my_vy, &vy, 1, MPI_DOUBLE, MPI_SUM, 0, world);
+    MPI_Reduce(&my_vz, &vz, 1, MPI_DOUBLE, MPI_SUM, 0, world);
+
+    //printf("%i/%i - atom_type? %i\n", myworld, mycomm, iatom_type);
+    //printf("%i/%i - v? %g,%g,%g\n",
+    //  myworld, mycomm, vx,vy,vz);
   }
 
-  // tell other box the atome type and velocity it's receiving
-  if (mycomm == 0 && sender) {
-    MPI_Bcast(&iatom_type, 1, MPI_INT, myworld, comm_replica);
-    MPI_Bcast(&v_iatom, 3, MPI_DOUBLE, myworld, comm_replica);
+  //energy_after = energy_full();
+  //printf("%i/%i - e after? %g\n", myworld, mycomm, energy_after);
+
+  // tell other box the atome type, mask, charge, and velocity it's receiving
+  int all_iatom_type, all_mask_iatom;
+  double all_q_iatom;
+  double all_vx, all_vy, all_vz;
+  if (mycomm == 0) {
+    MPI_Allreduce(&iatom_type, &all_iatom_type, 1, MPI_INT, MPI_SUM, comm_replica);
+    MPI_Allreduce(&mask_iatom, &all_mask_iatom, 1, MPI_INT, MPI_SUM, comm_replica);
+    MPI_Allreduce(&q_iatom,    &all_q_iatom, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
+    MPI_Allreduce(&vx, &all_vx, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
+    MPI_Allreduce(&vy, &all_vy, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
+    MPI_Allreduce(&vz, &all_vz, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
   }
-  MPI_Bcast(&iatom_type, 1, MPI_INT, 0, world);
-  MPI_Bcast(&v_iatom, 3, MPI_DOUBLE, 0, world);
+
+  // tell all other procs the atom props
+  MPI_Bcast(&all_iatom_type, 1, MPI_INT, 0, world);
+  MPI_Bcast(&all_mask_iatom, 1, MPI_INT, 0, world);
+  MPI_Bcast(&all_q_iatom, 1, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&all_vx, 1, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&all_vy, 1, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&all_vz, 1, MPI_DOUBLE, 0, world);
+
+  //printf("%i/%i - t %i m %i v? %g,%g,%g\n",
+  //  myworld, mycomm, all_iatom_type, all_mask_iatom,
+  //  all_vx, all_vy, all_vz);
+  //error->one(FLERR,"ck");
 
   // then send the atom to other box
   int proc_flag = 0;
@@ -273,17 +314,17 @@ void FixGEMC::attempt_atomic_exchange_full()
     } // END if triclinic
 
     if (proc_flag) {
-      atom->avec->create_atom(iatom_type,coord);
+      atom->avec->create_atom(all_iatom_type,coord);
       int jatom = atom->nlocal - 1;
 
       // add to groups
       // optionally add to type-based groups
 
-      atom->mask[jatom] = mask_iatom;
-      atom->v[jatom][0] = v_iatom[0];
-      atom->v[jatom][1] = v_iatom[1];
-      atom->v[jatom][2] = v_iatom[2];
-      if (q_flag) atom->q[jatom] = q_iatom;
+      atom->mask[jatom] = all_mask_iatom;
+      atom->v[jatom][0] = all_vx;
+      atom->v[jatom][1] = all_vy;
+      atom->v[jatom][2] = all_vz;
+      if (q_flag) atom->q[jatom] = all_q_iatom;
       modify->create_attribute(jatom);
     } // END if proc_flag
 
@@ -295,21 +336,24 @@ void FixGEMC::attempt_atomic_exchange_full()
     //  if (atom->map_style != Atom::MAP_NONE) atom->map_init();
     //}
 
-    atom->nghost = 0;
+    //atom->nghost = 0; // TODO : is this needed?
     if (triclinic_flag) domain->x2lamda(atom->nlocal);
     comm->borders();
     if (triclinic_flag) domain->lamda2x(atom->nlocal+atom->nghost);
     if (force->kspace) force->kspace->qsum_qsq();
     if (force->pair->tail_flag) force->pair->reinit();
-    energy_after = energy_full();
-    dU = energy_after-energy_before;
   } // END if sender
 
+  // everyone call full_energy
+  double energy_before = energy_stored;
+  double energy_after = energy_full();
+
   // evalute probability for exchange
-  double dU_all;
+  double dU;
   int success;
   if (comm->me == 0) {
-    MPI_Allreduce(&dU,&dU_all,1,MPI_DOUBLE,MPI_SUM,comm_replica);
+    double idU = energy_after-energy_before;
+    MPI_Allreduce(&idU,&dU,1,MPI_DOUBLE,MPI_SUM,comm_replica);
     double volume = (xhi-xlo)*(yhi-ylo)*(zhi-zlo);
     double NV;
     if (sender) NV = volume/atom->natoms;
@@ -317,13 +361,15 @@ void FixGEMC::attempt_atomic_exchange_full()
     double allNV;
     MPI_Allreduce(&NV,&allNV,1,MPI_DOUBLE,MPI_PROD,comm_replica);
 
-    dU_all += (box_temp*force->boltz*log(allNV));
-    double prob = MIN(exp(-beta*dU_all),1.0);
+    dU += (box_temp*force->boltz*log(allNV));
+    double prob = MIN(exp(-beta*dU),1.0);
     if (prob >= random->uniform()) success = 1;
     MPI_Bcast(&success, 1, MPI_INT, 0, comm_replica);
   }
   MPI_Bcast(&success, 1, MPI_INT, 0, world);
-  
+
+  //printf("%i/%i - success? %i\n", myworld, mycomm, success);
+
   if (sender) {
     // delete iatom
     if (success) {
@@ -338,8 +384,8 @@ void FixGEMC::attempt_atomic_exchange_full()
     // revert iatom (do not delete)
     } else {
       if (iatom >= 0) {
-        atom->mask[iatom] = mask_iatom;
-        if (q_flag) atom->q[iatom] = q_iatom;
+        atom->mask[iatom] = all_mask_iatom;
+        if (q_flag) atom->q[iatom] = all_q_iatom;
       }
       if (force->kspace) force->kspace->qsum_qsq();
       if (force->pair->tail_flag) force->pair->reinit();
@@ -348,10 +394,12 @@ void FixGEMC::attempt_atomic_exchange_full()
   } else {
     // accept newly inserted iatomthere
     if (success) {
+      if (mycomm == 0) printf("success!\n");
       nexchange_successes++;
       energy_stored = energy_after;
     // remove newly inserted iatom
     } else {
+      if (mycomm == 0) printf("fail!\n");
       atom->natoms--;
       if (proc_flag) atom->nlocal--;
       if (force->kspace) force->kspace->qsum_qsq();
@@ -509,7 +557,19 @@ void FixGEMC::scale_positions(const double scale)
 {
   double **x = atom->x;
   // TODO : should I scale ghost atom positions? (probably?)
-  for (int i = 0; i < natom_total; i++) {
+  for (int i = 0; i < natom_local; i++) {
+
+    // TODO : current position outside of box
+    if (i < natom_local) {
+      if (x[i][0] > xhi || x[i][0] < xlo ||
+          x[i][1] > yhi || x[i][1] < ylo ||
+          x[i][2] > zhi || x[i][2] < zlo) {
+        printf("%i - %g, %g, %g\n",
+          i, x[i][0], x[i][1], x[i][2]);
+        error->one(FLERR,"Current atom position outside of box");
+      }
+    }
+
     x[i][0] = (x[i][0]-xlo)*scale+xlo;
     x[i][1] = (x[i][1]-ylo)*scale+ylo;
     x[i][2] = (x[i][2]-zlo)*scale+zlo;
@@ -535,7 +595,7 @@ void FixGEMC::unscale_positions(const double scale)
 {
   double **x = atom->x;
   // TODO : should I scale ghost atom positions? (probably?)
-  for (int i = 0; i < natom_total; i++) {
+  for (int i = 0; i < natom_local; i++) {
     x[i][0] = (x[i][0]-xlo)/scale+xlo;
     x[i][1] = (x[i][1]-ylo)/scale+ylo;
     x[i][2] = (x[i][2]-zlo)/scale+zlo;

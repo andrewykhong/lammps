@@ -57,6 +57,7 @@ using namespace FixConst;
 // 2) what are all the nullptrs in object creation and which are needed
 // 3) where and how often need to reneighbor (after each translate/exchange?)
 //    currently reneighbor each energy_full call
+// 4) volume exchange works with 1-1 partition but not 2-2 (some particles out of box)
 
 // large energy value used to signal overlap
 
@@ -299,7 +300,7 @@ void FixGEMC::pre_exchange()
         else if (imove < pc_translate) ;//attempt_molecule_translation_full();
         else ;//attempt_molecule_rotation_full();
       } else {
-        attempt_volume_change_full();
+        attempt_atomic_exchange_full();
         //if (imove < pc_exchange) attempt_atomic_exchange_full();
         //else if (imove < pc_volume) attempt_volume_change_full();
         //else attempt_atomic_translation_full();
@@ -309,7 +310,7 @@ void FixGEMC::pre_exchange()
 
   // update next time to call
   next_reneighbor = update->ntimestep + nevery;
-  error->one(FLERR,"ck step!");
+  error->one(FLERR,"end of pre");
 }
 
 /* ----------------------------------------------------------------------
