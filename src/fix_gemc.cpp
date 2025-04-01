@@ -283,6 +283,9 @@ void FixGEMC::pre_exchange()
   // do translations/rotations first
   // no communication needed between boxes
 
+  if (mycomm == 0 & myworld == 0)
+    printf("begin moves\n");
+
   // don't need pairwise for current use case
 
   update_gas_atoms_list();
@@ -310,9 +313,12 @@ void FixGEMC::pre_exchange()
     }
   } // TODO: Add not full option
 
+  if (mycomm == 0 & myworld == 0)
+    printf("moves done\n");
+
   // update next time to call
   next_reneighbor = update->ntimestep + nevery;
-  error->one(FLERR,"end of pre");
+  //error->one(FLERR,"end of pre");
 }
 
 /* ----------------------------------------------------------------------

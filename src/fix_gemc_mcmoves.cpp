@@ -41,6 +41,8 @@ static constexpr double MAXENERGYTEST = 1.0e50;
 /* ----------------------------------------------------------------------
   Shrink/expand boxes (always requires full energy)
 ------------------------------------------------------------------------- */
+// TODO : got error
+//   "Neighbor list overflow, boost neigh_modify one (../npair_bin.cpp:248)"
 void FixGEMC::attempt_volume_change_full()
 {
   nvolume_attempts++;
@@ -255,7 +257,14 @@ void FixGEMC::attempt_atomic_exchange_full()
   }
   MPI_Bcast(&sender, 1, MPI_INT, 0, world);
 
-  //printf("%i/%i - sender? %i\n", myworld, mycomm, sender);
+  // check roles are sync'd
+  //if (myworld == 0)
+  //  printf("%i/%i - sender? %i\n", myworld, mycomm, sender);
+  //error->one(FLERR,"ck");
+
+  //double energy_ck = energy_full();
+  //printf("should be same %i/%i - %g -> %g\n",
+  //  myworld, mycomm, energy_stored, energy_ck);
 
   // atom to delete/insert
   int iatom;
@@ -342,6 +351,7 @@ void FixGEMC::attempt_atomic_exchange_full()
   MPI_Bcast(&all_vy, 1, MPI_DOUBLE, 0, world);
   MPI_Bcast(&all_vz, 1, MPI_DOUBLE, 0, world);
 
+  // check everyone has same atom being exchanged
   //printf("%i/%i - t %i m %i v? %g,%g,%g\n",
   //  myworld, mycomm, all_iatom_type, all_mask_iatom,
   //  all_vx, all_vy, all_vz);
@@ -372,6 +382,9 @@ void FixGEMC::attempt_atomic_exchange_full()
     } // END mycomm
 
     MPI_Bcast(&coord, 3, MPI_DOUBLE, 0, world);
+
+    //printf("%i/%i - %g, %g, %g\n",
+    //  myworld, mycomm, coord[0], coord[1], coord[2]);
 
     // find proc with this coordinate
     if (triclinic_flag) {
@@ -413,9 +426,9 @@ void FixGEMC::attempt_atomic_exchange_full()
     }
 
     //atom->nghost = 0; // probably useless
-    if (triclinic_flag) domain->x2lamda(atom->nlocal);
+    if (triclinic_flag) domain->x2lamda(natom_local);
     comm->borders();
-    if (triclinic_flag) domain->lamda2x(atom->nlocal+atom->nghost);
+    if (triclinic_flag) domain->lamda2x(natom_total);
     if (force->kspace) force->kspace->qsum_qsq();
     if (force->pair->tail_flag) force->pair->reinit();
   } // END if sender
@@ -425,26 +438,43 @@ void FixGEMC::attempt_atomic_exchange_full()
   double energy_after = energy_full();
 
   // evalute probability for exchange
-  double dU;
   int success;
-  if (comm->me == 0) {
+  if (mycomm == 0) {
+    double dU;
     double idU = energy_after-energy_before;
+    //printf("%i/%i - %g -> %g\n", myworld, mycomm, energy_before, energy_after);
     MPI_Allreduce(&idU,&dU,1,MPI_DOUBLE,MPI_SUM,comm_replica);
+    //printf("%i/%i - %g -> %g\n", myworld, mycomm, idU, dU);
+
     double volume = (xhi-xlo)*(yhi-ylo)*(zhi-zlo);
     double NV;
-    if (sender) NV = volume/atom->natoms;
-    else NV = (atom->natoms)/volume;
+    // TODO : I believe the send should be over current natoms - 1
+    // ... does it included count if it has exclusion group bit?
+    if (sender) NV = volume/(atom->natoms-1);
+    else NV = atom->natoms/volume;
     double allNV;
     MPI_Allreduce(&NV,&allNV,1,MPI_DOUBLE,MPI_PROD,comm_replica);
 
+    //printf("%i/%i - %g , %g-> %g\n", myworld, mycomm, volume, NV, allNV);
+
     dU += (box_temp*force->boltz*log(allNV));
     double prob = MIN(exp(-beta*dU),1.0);
-    if (prob >= random->uniform()) success = 1;
+
+    if (prob > random->uniform()) success = 1;
+    else success = 0;
+
     MPI_Bcast(&success, 1, MPI_INT, 0, comm_replica);
+
+    //if (myworld == 0)
+    //  printf("%i/%i - prob: %g -> %g; success? %i\n",
+    //    myworld, mycomm, beta*dU, prob, success);
+
   }
   MPI_Bcast(&success, 1, MPI_INT, 0, world);
 
-  //printf("%i/%i - success? %i\n", myworld, mycomm, success);
+  //if (myworld == 0)
+  //  printf("%i/%i - success? %i\n", myworld, mycomm, success);
+  //error->one(FLERR,"ck");
 
   if (sender) {
     // delete iatom
@@ -457,6 +487,7 @@ void FixGEMC::attempt_atomic_exchange_full()
       atom->natoms--;
       if (atom->map_style != Atom::MAP_NONE) atom->map_init();
       energy_stored = energy_after;
+      //printf("%i/%i - deleted!\n", myworld, mycomm);
     // revert iatom (do not delete)
     } else {
       if (iatom >= 0) {
@@ -466,21 +497,22 @@ void FixGEMC::attempt_atomic_exchange_full()
       if (force->kspace) force->kspace->qsum_qsq();
       if (force->pair->tail_flag) force->pair->reinit();
       energy_stored = energy_before;
+      //printf("%i/%i - fail deleted!\n", myworld, mycomm);
     }
   } else {
     // accept newly inserted iatomthere
     if (success) {
-      if (mycomm == 0) printf("success!\n");
       nexchange_successes++;
       energy_stored = energy_after;
+      //printf("%i/%i - stored!\n", myworld, mycomm);
     // remove newly inserted iatom
     } else {
-      if (mycomm == 0) printf("fail!\n");
       atom->natoms--;
       if (proc_flag) atom->nlocal--;
       if (force->kspace) force->kspace->qsum_qsq();
       if (force->pair->tail_flag) force->pair->reinit();
       energy_stored = energy_before;
+      //printf("%i/%i - fail stored!\n", myworld, mycomm);
     }
   }
 
