@@ -9,6 +9,7 @@
 #include "force.h"
 #include "group.h"
 #include "input.h"
+#include "irregular.h"
 #include "memory.h"
 #include "modify.h"
 #include "molecule.h"
@@ -61,6 +62,9 @@ void FixGEMC::attempt_volume_change_full()
       while (fabs(dvolume) >= min_volume)
         dvolume = (2.0*random->uniform()-1.0)*max_volume;
     }
+    // TODO : TEMPORARY
+    //dvolume = max_volume;
+
     /// broadcast volume change to other world
     MPI_Bcast(&dvolume, 1, MPI_DOUBLE, 0, comm_replica);
     // have one world invert the volume change so total volume conserved
@@ -84,6 +88,22 @@ void FixGEMC::attempt_volume_change_full()
   //printf("%g->%g -> %g\n", volume, dvolume, fvolume);
   //printf("scale_length: %g\n", scale_length);
 
+  // check positions
+  //if (myworld == 0) {
+  //  printf("%g, %g, %g\n", domain->boxhi[0], domain->boxhi[1], domain->boxhi[2]);
+  //  scale_positions(scale_length);
+  //}
+
+  //double energy_temp = energy_full();
+  //if (mycomm == 0)
+  //  printf("energy_now: %g\n", energy_temp);
+
+  // convert to lamda coords so they get scaled
+  // TODO : If this is only natom_local, then there is huge spike in energy
+  // .... but not with natom_total. So ghost atoms also need to be shifted?
+  domain->x2lamda(natom_total);
+  for (auto &ifix : rfix) ifix->deform(0);
+
   // shrink box toward lower corner
   // lower box coordinates always same
   // find center point of box
@@ -91,8 +111,41 @@ void FixGEMC::attempt_volume_change_full()
   yhi_tmp = ylo + Ly*scale_length;
   zhi_tmp = zlo + Lz*scale_length;
 
+  // set temporarily
+  domain->boxhi[0] = xhi_tmp;
+  domain->boxhi[1] = yhi_tmp;
+  domain->boxhi[2] = zhi_tmp;
+
+  // reset box and subbox dimensions
+  domain->set_global_box();
+  domain->set_local_box(); // reassigns sub domains
+
+  // need to migrate after remapping
+  auto irregular = new Irregular(lmp);
+  irregular->migrate_atoms();
+  
+  // positions are scaled now
+  domain->lamda2x(natom_total);
+  for (auto &ifix : rfix) ifix->deform(1);
+
+  // remap call (may lose atoms if no remap)
+  // TODO: I think this call is actually not needed since no atoms should pop
+  // .... outside the boundes
+  domain->remap_all(); // maybe?
+
+  // build neighbor
+  // TODO: I think this is necessary, but commenting this out didn't change
+  // .... the energy_full(). Could've been just this case.
+  neighbor->build(1);
+
+  // check positions
+  //if (myworld == 0) {
+  //  printf("%g, %g, %g\n", domain->boxhi[0], domain->boxhi[1], domain->boxhi[2]);
+  //  scale_positions(scale_length);
+  //}
+
   // check new domain size sync'd
-  //printf("%i/%i - scale: %g\n", myworld, mycomm, scale_length);
+  //printf("%i/%i - dV: %g; scale: %g\n", myworld, mycomm, dvolume, scale_length);
   //printf("xhi: %g, %g, %g\n", xhi_tmp, yhi_tmp, zhi_tmp);
   //error->one(FLERR,"ck");
 
@@ -102,8 +155,6 @@ void FixGEMC::attempt_volume_change_full()
   // current system energy
   double energy_before = energy_stored;
 
-  // scale the particle positions (will revert if not accepted)
-  scale_positions(scale_length);
   //error->one(FLERR,"ck after scale");
   // (possible) future system energy
   double energy_after = energy_full();
@@ -111,6 +162,7 @@ void FixGEMC::attempt_volume_change_full()
   // get total energy from each partition
   double dU;
   if (mycomm == 0) {
+    //printf("energy: %g -> %g\n", energy_before, energy_after);
     double idU = energy_after-energy_before-dU_volume;
     // sum change in full energy across each box
     MPI_Allreduce(&idU, &dU, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
@@ -120,29 +172,50 @@ void FixGEMC::attempt_volume_change_full()
 
   // check potenital change sync'd
   //printf("%i/%i - %g\n", myworld, mycomm, dU);
+  //error->one(FLERR,"ck");
 
   // evaluate probability
-  double prob = MIN(exp(-beta*dU),1.0);
-  // scale back particle positions if volume change rejected
-  // random_volume should give same number across all procs across boxes
-  if (prob < random_sync->uniform()) {
-    // revert positions
-    unscale_positions(scale_length);
-    // TODO : reneighbor here?
-    printf("fail!\n");
+  double prob;
+  if (dU <= 0.0) prob = 1.0;
+  else prob = MIN(exp(-beta*dU),1.0);
+
+  // volume change rejected -> revert atom positions
+  if (prob > random_sync->uniform()) {
+
+    //double energy_wrong = energy_full();
+
+    domain->x2lamda(natom_total);
+    for (auto &ifix : rfix) ifix->deform(0);
+
+    domain->boxhi[0] = xhi;
+    domain->boxhi[1] = yhi;
+    domain->boxhi[2] = zhi;
+
+    // reset box and subbox dimensions
+    domain->set_global_box();
+    domain->set_local_box(); // reassigns sub domains
+
+    irregular->migrate_atoms();
+    domain->lamda2x(natom_total);
+    for (auto &ifix : rfix) ifix->deform(1);
+
+    // remap call (may lose atoms if no remap)
+    domain->remap_all(); // maybe?
+
+    // build neighbor
+    neighbor->build(1);
+
+    //printf("%i/%i -- volume fail!\n", myworld, mycomm);
+
+    //double energy_ck = energy_full();
+    //printf("should be same: %g - %g; wrong: %g\n",
+    //  energy_stored, energy_ck, energy_wrong);
+    //error->one(FLERR,"Ck");
+  // acccept volume change
   } else {
     nvolume_successes++;
     // store new energy
     energy_stored = energy_after;
-
-    // shrink/expand box lengths wrt to center
-    domain->boxhi[0] = xhi_tmp;
-    domain->boxhi[1] = yhi_tmp;
-    domain->boxhi[2] = zhi_tmp;
-
-    // reset box and subbox dimensions
-    domain->set_global_box();
-    domain->set_local_box();
 
     // reacquire upper domain bounds
     xhi = domain->boxhi[0];
@@ -157,8 +230,9 @@ void FixGEMC::attempt_volume_change_full()
       sublo = domain->sublo;
       subhi = domain->subhi;
     }
-    printf("success!\n");
+    //printf("%i/%i -- volume success!\n", myworld, mycomm);
   }
+  delete irregular;
 }
 
 /* ----------------------------------------------------------------------
@@ -331,12 +405,14 @@ void FixGEMC::attempt_atomic_exchange_full()
     atom->natoms++;
 
     // TODO: What is happening here
-    //if (atom->tag_enable) {
-    //  atom->tag_extend();
-    //  if (atom->map_style != Atom::MAP_NONE) atom->map_init();
-    //}
+    // if tag's enabled, mapping local to global ids
+    if (atom->tag_enable) {
+      atom->tag_extend();
+      // cctually mapping
+      if (atom->map_style != Atom::MAP_NONE) atom->map_init();
+    }
 
-    //atom->nghost = 0; // TODO : is this needed?
+    //atom->nghost = 0; // probably useless
     if (triclinic_flag) domain->x2lamda(atom->nlocal);
     comm->borders();
     if (triclinic_flag) domain->lamda2x(atom->nlocal+atom->nghost);
@@ -461,8 +537,9 @@ void FixGEMC::attempt_atomic_translation_full()
   }
 
   double energy_after = energy_full();
-  //printf("%i -> %i :: %i : %4.3e -> %4.3e\n",
-  //  myworld, mycomm, i, energy_before, energy_after);
+  //if (myworld == 0)
+  //  printf("%i -> %i :: %i : %4.3e -> %4.3e\n",
+  //    myworld, mycomm, i, energy_before, energy_after);
 
   // DEBUG: Check if RNG sync'd 
   //for (int r = 0; r < 8; r++) random_sync->uniform();
@@ -470,11 +547,19 @@ void FixGEMC::attempt_atomic_translation_full()
   //printf("%i, %i rng: %g - %g\n",
   //  myworld, mycomm, random_sync->uniform(), random->uniform());
 
+  double prob;
+  if (energy_after <= energy_before) prob = 1.0;
+  else prob = exp(beta*(energy_before - energy_after));
+
+  //if (myworld == 0)
+  //  printf("%g - %g -> %g - %g\n", energy_before, energy_after,
+  //    prob, random_sync->uniform());
+
   // TODO : More thorough testing that successes and fails sync'd
   if (energy_after < MAXENERGYTEST &&
-      random_sync->uniform() <
-      exp(beta*(energy_before - energy_after))) {
+      random_sync->uniform() < prob) {
     energy_stored = energy_after;
+    //if (myworld == 0) printf("%i - failure!\n", mycomm);
   } else {
     ntranslation_successes++;
     tagint tmptag_all;
@@ -491,6 +576,7 @@ void FixGEMC::attempt_atomic_translation_full()
       }
     }
     energy_stored = energy_before;
+    //if (myworld == 0) printf("%i - success!\n", mycomm);
   }
   update_gas_atoms_list();
 }
@@ -556,62 +642,9 @@ void FixGEMC::attempt_molecule_translation_full()
 void FixGEMC::scale_positions(const double scale)
 {
   double **x = atom->x;
-  // TODO : should I scale ghost atom positions? (probably?)
-  for (int i = 0; i < natom_local; i++) {
+  printf("%g, %g, %g\n",
+    x[1][0], x[1][1], x[1][2]);
 
-    // TODO : current position outside of box
-    if (i < natom_local) {
-      if (x[i][0] > xhi || x[i][0] < xlo ||
-          x[i][1] > yhi || x[i][1] < ylo ||
-          x[i][2] > zhi || x[i][2] < zlo) {
-        printf("%i - %g, %g, %g\n",
-          i, x[i][0], x[i][1], x[i][2]);
-        error->one(FLERR,"Current atom position outside of box");
-      }
-    }
-
-    x[i][0] = (x[i][0]-xlo)*scale+xlo;
-    x[i][1] = (x[i][1]-ylo)*scale+ylo;
-    x[i][2] = (x[i][2]-zlo)*scale+zlo;
-
-    // check if atoms in right position
-    // TODO : should I check ghost atoms?
-    if (i < natom_local) {
-      if (x[i][0] > xhi_tmp || x[i][0] < xlo ||
-          x[i][1] > yhi_tmp || x[i][1] < ylo ||
-          x[i][2] > zhi_tmp || x[i][2] < zlo) {
-        printf("%i - %g, %g, %g\n",
-          i, x[i][0], x[i][1], x[i][2]);
-        error->one(FLERR,"Updated atom position outside of box");
-      }
-    }
-  }
-}
-
-/* ----------------------------------------------------------------------
-  Revert to old particle positions according to volume change
-------------------------------------------------------------------------- */
-void FixGEMC::unscale_positions(const double scale)
-{
-  double **x = atom->x;
-  // TODO : should I scale ghost atom positions? (probably?)
-  for (int i = 0; i < natom_local; i++) {
-    x[i][0] = (x[i][0]-xlo)/scale+xlo;
-    x[i][1] = (x[i][1]-ylo)/scale+ylo;
-    x[i][2] = (x[i][2]-zlo)/scale+zlo;
-
-    // check if atoms in right position
-    // TODO : should I check ghost atoms?
-    if (i < natom_local) {
-      if (x[i][0] > xhi || x[i][0] < xlo ||
-          x[i][1] > yhi || x[i][1] < ylo ||
-          x[i][2] > zhi || x[i][2] < zlo) {
-        printf("%i - %g, %g, %g\n",
-          i, x[i][0], x[i][1], x[i][2]);
-        error->one(FLERR,"Reverted atom position outside of box");
-      }
-    }
-  }
 }
 
 /* ----------------------------------------------------------------------

@@ -97,6 +97,7 @@ class FixGEMC : public Fix {
   double xhi, yhi, zhi; // upper domain bounds
   double *sublo, *subhi; // sub domain bounds
   double xhi_tmp, yhi_tmp, zhi_tmp; // temporary upper domain bounds
+  std::vector<Fix *> rfix;    // indices of rigid fixes
 
   // for communication
 

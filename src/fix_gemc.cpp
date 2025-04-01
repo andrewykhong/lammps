@@ -52,12 +52,22 @@
 using namespace LAMMPS_NS;
 using namespace FixConst;
 
+// Notes:
+// 1) full flag always on
+
 // TODO :General questions
 // 1) what is tagint
+      // global id - molecules are tagints
+      // a big int (64-bit)
 // 2) what are all the nullptrs in object creation and which are needed
+      // for inhereited vars,  can be for safety so no pointers to random places
 // 3) where and how often need to reneighbor (after each translate/exchange?)
 //    currently reneighbor each energy_full call
+      // may need to reneighbor after every step (even in translation)
+      // may need to do it for volume move (in case it doesn't in domain)
+      // .. because of cutoff radius
 // 4) volume exchange works with 1-1 partition but not 2-2 (some particles out of box)
+      // make error for using shrink wrap
 
 // large energy value used to signal overlap
 
@@ -91,7 +101,7 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
 
   // set up reneighboring
 
-  force_reneighbor = 1; // TODO: need this for pre-exchange?
+  force_reneighbor = 1;
   next_reneighbor = update->ntimestep + 1;
 
   // required user args
@@ -125,6 +135,12 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
   // same RNG for each replica for volume MC moves
   random = new RanPark(lmp,seed+3.0*universe->iworld+7.0*color); // general purpose rng
   random_sync = new RanPark(lmp,seed); // sync which type of move to make
+
+  // detect if any rigid fixes exist so rigid bodies move when box is remapped
+
+  rfix.clear();
+  for (auto &ifix : modify->get_fix_list())
+    if (ifix->rigid_flag) rfix.push_back(ifix);
 
   // read options from end of input line
 
@@ -188,32 +204,16 @@ void FixGEMC::init()
   // DEBUG : Test if probabilities set up correctly
   //printf("%g, %g, %g, %g\n", pc_exchange, pc_volume, pc_translate, pc_rotate);
 
-  // set to full energy?
-
-  if (!full_flag) {
-    if ((force->kspace) ||
-        (force->pair == nullptr) ||
-        (force->pair->single_enable == 0) ||
-        (force->pair_match("^hybrid",0)) ||
-        (force->pair_match("^eam",0)) ||
-        (force->pair->tail_flag)) {
-      full_flag = true;
-      if (mycomm == 0)
-        error->warning(FLERR,"Fix gemc using full_energy option");
-    }
-  }
-
-  if (full_flag) c_pe = modify->compute[modify->find_compute("thermo_pe")];
+  // for full energy
+  c_pe = modify->compute[modify->find_compute("thermo_pe")];
 
   // check if atoms charged
   q_flag = atom->q_flag;
 
-  // pre compute
-
+  // pre compute scaled temperature
   beta = 1.0/(force->boltz*box_temp);
 
   // get domain dim
-
   triclinic_flag = domain->triclinic;
 
   // get subdomain
@@ -283,6 +283,8 @@ void FixGEMC::pre_exchange()
   // do translations/rotations first
   // no communication needed between boxes
 
+  // don't need pairwise for current use case
+
   update_gas_atoms_list();
   if (full_flag) {
     energy_stored = energy_full();
@@ -300,7 +302,7 @@ void FixGEMC::pre_exchange()
         else if (imove < pc_translate) ;//attempt_molecule_translation_full();
         else ;//attempt_molecule_rotation_full();
       } else {
-        attempt_atomic_exchange_full();
+        attempt_volume_change_full();
         //if (imove < pc_exchange) attempt_atomic_exchange_full();
         //else if (imove < pc_volume) attempt_volume_change_full();
         //else attempt_atomic_translation_full();
@@ -330,7 +332,7 @@ void FixGEMC::options(int narg, char **arg)
 }
 
 /* ----------------------------------------------------------------------
-   update per-proc atom count
+   update per-proc atom count (same for molecules)
    assume all atoms are candidates for MC moves
 ------------------------------------------------------------------------- */
 
@@ -357,12 +359,12 @@ double FixGEMC::energy_full()
 {
   int imolecule;
 
-  if (triclinic_flag) domain->x2lamda(atom->nlocal);
+  if (triclinic_flag) domain->x2lamda(atom->nlocal); // read more into the x2lamda
   domain->pbc();
   comm->exchange();
   //atom->nghost = 0; // TODO : What is this for?
-  comm->borders();
-  if (triclinic_flag) domain->lamda2x(atom->nlocal+atom->nghost);
+  comm->borders(); // reset the ghosts (prev line extra)
+  if (triclinic_flag) domain->lamda2x(atom->nlocal+atom->nghost); // read more into lamda2x
   if (modify->n_pre_neighbor) modify->pre_neighbor();
   neighbor->build(1);
 
