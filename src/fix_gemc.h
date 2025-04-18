@@ -46,6 +46,7 @@ class FixGEMC : public Fix {
   double box_temp; // temperature of each box (assumed equal)
   double displace; // maximum displacement for traslations
   double max_volume; // maximum volume change requested
+  double min_box_volume; // minimum box volume
   int seed; // RNG seed
 
   // for evaluating probability
@@ -58,7 +59,7 @@ class FixGEMC : public Fix {
 
   // for determining which move to make
 
-  double nmoves; // total MC moves (translate/rotate + exchange + volume)
+  int nmoves; // total MC moves (translate/rotate + exchange + volume)
   // cummulative probabilites
   double pc_exchange; // probability MC move is an exchange
   double pc_volume; // probability MV move is a volume change
@@ -104,12 +105,14 @@ class FixGEMC : public Fix {
   int myworld;
   int mycomm;
   int nprocs;
+  int myrank_replica;
 
   double *commbuf;
   MPI_Comm comm_replica; // for communication between partitions
 
-  class RanPark *random_sync; // sync'd RNG between boxes
-  class RanPark *random; // general purpose RNG for each box (not sync'd)
+  class RanPark *random_universe; // sync'd RNG for all worlds
+  class RanPark *random_world; // sync'd RNG for one world
+  class RanPark *random_proc; // RNG for each proc (not sync'd)
 
   // subroutines //
 

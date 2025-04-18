@@ -114,7 +114,8 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
   box_temp = utils::numeric(FLERR,    arg[8], false, lmp);
   displace = utils::numeric(FLERR,    arg[9], false, lmp);
   max_volume = utils::numeric(FLERR,  arg[10], false, lmp);
-  seed = utils::inumeric(FLERR,       arg[11], false, lmp);
+  min_box_volume = utils::numeric(FLERR,  arg[11], false, lmp);
+  seed = utils::inumeric(FLERR,       arg[12], false, lmp);
 
   // DEBUG : Test if inputs correct
   //printf("arg: %i, %i, %i\n", nevery, ntranslate, nrotate);
@@ -133,8 +134,9 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
   //  printf("rest of us: %i\n", comm->me);
 
   // same RNG for each replica for volume MC moves
-  random = new RanPark(lmp,seed+3.0*universe->iworld+7.0*color); // general purpose rng
-  random_sync = new RanPark(lmp,seed); // sync which type of move to make
+  random_proc = new RanPark(lmp,seed+33333.0*(universe->iworld+1)+7777.0*(color+1));
+  random_world = new RanPark(lmp,seed+131313.0*(universe->iworld+1));
+  random_universe = new RanPark(lmp,seed);
 
   // detect if any rigid fixes exist so rigid bodies move when box is remapped
 
@@ -144,7 +146,7 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
 
   // read options from end of input line
 
-  options(narg-12,&arg[12]);
+  //options(narg-12,&arg[12]);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -152,7 +154,7 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
 FixGEMC::~FixGEMC()
 {
   MPI_Comm_free(&comm_replica);
-  memory->destroy(commbuf);
+  //memory->destroy(commbuf); // causing seg fault if no commbuf initialized
 }
 
 /* ---------------------------------------------------------------------- */
@@ -168,11 +170,11 @@ int FixGEMC::setmask()
 
 void FixGEMC::init()
 {
-
   // for comm
   myworld = universe->iworld;
   mycomm = comm->me;
   nprocs = comm->nprocs;
+  if (mycomm == 0) MPI_Comm_rank(comm_replica, &myrank_replica);
 
   // determine probability of each step during pre_exchange
 
@@ -182,10 +184,11 @@ void FixGEMC::init()
   // total moves is a double to avoid type casting later
   nmoves = nvolume + nexchange + ntranslate + nrotate;
 
-  double p_exchange  = nexchange/nmoves;
-  double p_volume    = nvolume/nmoves;
-  double p_translate = ntranslate/nmoves;
-  double p_rotate    = nrotate/nmoves;
+  double d_nmoves = static_cast<double>(nmoves);
+  double p_exchange  = nexchange/d_nmoves;
+  double p_volume    = nvolume/d_nmoves;
+  double p_translate = ntranslate/d_nmoves;
+  double p_rotate    = nrotate/d_nmoves;
 
   // normalize probabilities
   double p_total = p_exchange + p_volume + p_translate + p_rotate;
@@ -201,9 +204,6 @@ void FixGEMC::init()
     pc_rotate = 0.0;
   }
 
-  // DEBUG : Test if probabilities set up correctly
-  //printf("%g, %g, %g, %g\n", pc_exchange, pc_volume, pc_translate, pc_rotate);
-
   // for full energy
   c_pe = modify->compute[modify->find_compute("thermo_pe")];
 
@@ -216,6 +216,14 @@ void FixGEMC::init()
   // get domain dim
   triclinic_flag = domain->triclinic;
 
+  // get domain dims
+  xlo = domain->boxlo[0];
+  xhi = domain->boxhi[0];
+  ylo = domain->boxlo[1];
+  yhi = domain->boxhi[1];
+  zlo = domain->boxlo[2];
+  zhi = domain->boxhi[2];
+
   // get subdomain
   if (triclinic_flag) {
     sublo = domain->sublo_lamda;
@@ -223,6 +231,16 @@ void FixGEMC::init()
   } else {
     sublo = domain->sublo;
     subhi = domain->subhi;
+  }
+
+  // if negative, then use default of half of vox volume
+  // 25% of box volume
+  if (min_box_volume < 0.0) {
+    double my_min_box_volume = (xhi-xlo)*(yhi-ylo)*(zhi-zlo)*0.25;
+    if (mycomm == 0)
+      MPI_Allreduce(&my_min_box_volume, &min_box_volume,
+        1, MPI_DOUBLE, MPI_MIN, comm_replica);
+    MPI_Bcast(&min_box_volume, 1, MPI_DOUBLE, 0, world);
   }
 
   // create unique group name for atoms to be excluded for particle exchange
@@ -283,11 +301,16 @@ void FixGEMC::pre_exchange()
   // do translations/rotations first
   // no communication needed between boxes
 
-  if (mycomm == 0 & myworld == 0)
-    printf("begin moves\n");
+  //if (mycomm == 0 & myworld == 0)
+  //  printf("begin moves\n");
+
+  // update next time to call
+  next_reneighbor = update->ntimestep + nevery;
 
   // don't need pairwise for current use case
 
+  // translation seems to be fully working
+  double imove;
   update_gas_atoms_list();
   if (full_flag) {
     energy_stored = energy_full();
@@ -295,29 +318,22 @@ void FixGEMC::pre_exchange()
         error->warning(FLERR,"fix gemc: Energy of old configuration > MAXENERGYTEST");
 
     for (int i = 0; i < nmoves; i++) {
-      double imove = random_sync->uniform();
-      // DEBUG : Check if RNG sync'd
-      //printf("%i - %i; imove: %g\n", myworld, mycomm, imove);
+      imove = random_universe->uniform();
 
-      if (molecule_flag) { // TODO : add molecule counterpart
-        if (imove < pc_exchange) ;//attempt_molecule_exchange_full();
-        else if (imove < pc_volume) ;//attempt_volume_change_full();
-        else if (imove < pc_translate) ;//attempt_molecule_translation_full();
-        else ;//attempt_molecule_rotation_full();
-      } else {
-        attempt_volume_change_full();
-        //if (imove < pc_exchange) attempt_atomic_exchange_full();
-        //else if (imove < pc_volume) attempt_volume_change_full();
-        //else attempt_atomic_translation_full();
-      }
+      // DEBUG : Check if RNG sync'd
+      //if (myworld == 0)
+      //  printf("%i - %i; imove: %g: %i/%i\n", myworld, mycomm, imove, i, nmoves);
+
+
+      //attempt_atomic_translation_full();
+      //attempt_volume_change_full();
+      attempt_atomic_exchange_full();
+      //if (imove < pc_exchange) attempt_atomic_exchange_full();
+      //else if (imove < pc_volume) attempt_volume_change_full();
+      //else attempt_atomic_translation_full();
     }
   } // TODO: Add not full option
 
-  if (mycomm == 0 & myworld == 0)
-    printf("moves done\n");
-
-  // update next time to call
-  next_reneighbor = update->ntimestep + nevery;
   //error->one(FLERR,"end of pre");
 }
 
@@ -413,6 +429,8 @@ double FixGEMC::energy_full()
     MPI_Allreduce(&overlaptest, &overlaptestall, 1, MPI_INT, MPI_MAX, world);
     if (overlaptestall) return MAXENERGYSIGNAL;
   }
+
+  //if (MAXENERGYSIGNAL) error->one(FLERR,"Probably bad");
 
   // clear forces so they don't accumulate over multiple
   // calls within fix gcmc timestep, e.g. for fix shake
