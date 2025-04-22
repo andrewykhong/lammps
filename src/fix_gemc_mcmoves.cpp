@@ -270,18 +270,18 @@ void FixGEMC::attempt_atomic_exchange_full()
   //printf("should be same %i/%i - %g -> %g\n",
   //  myworld, mycomm, energy_stored, energy_ck);
 
+  // set up for atom exchange
+  init_exchange();
+
+
+
+  int nsend;
   int send_comm;
 
   // atom to delete/insert
   int iatom;
-  double *buf;
 
   // these are temporarily stored
-  double q_iatom = 0;
-  int mask_iatom, type_iatom;
-  double vx,vy,vz;
-  vx = vy = vz = 0.0;
-  mask_iatom = type_iatom = 0;
 
   if (sender) {
     // pick one atom randomly from all atoms in system
@@ -290,45 +290,34 @@ void FixGEMC::attempt_atomic_exchange_full()
 
     //printf("%i/%i - atom? %i\n", myworld, mycomm, iatom);
 
-    //double my_q_iatom = 0.0;
-    //int my_mask_iatom = 0;
-    //int my_iatom_type = 0;
-    //double my_vx,my_vy,my_vz;
-    //my_vx = my_vy = my_vz = 0.0;
+    // have associated proc pack atom
     if (iatom >= 0) {
-      mask_iatom = atom->mask[iatom];
-      type_iatom = atom->type[iatom];
-      atom->mask[iatom] = exclusion_group_bit;
-      // check if charged
-      if (q_flag) {
-        q_iatom = atom->q[iatom];
-        atom->q[iatom] = 0.0;
-      }
+      nsend = atom->avec->pack_exchange(iatom,&buf_send);
+      // not sure if these are needed
+      //if (force->kspace) force->kspace->qsum_qsq();
+      //if (force->pair->tail_flag) force->pair->reinit();
 
-      vx = atom->v[iatom][0];
-      vy = atom->v[iatom][1];
-      vz = atom->v[iatom][2];
-
-      if (force->kspace) force->kspace->qsum_qsq();
-      if (force->pair->tail_flag) force->pair->reinit();
+      // send to proc 0 if it doesn't already have it
+      if (mycomm != 0)
+        MPI_Send(&buf_send, nsend, MPI_DOUBLE, 0, 0, world);
     }
 
-    int my_pair[2];
-    my_pair[0] = iatom;
-    my_pair[1] = mycomm;
+    //int my_pair[2];
+    //my_pair[0] = iatom;
+    //my_pair[1] = mycomm;
 
     // find which proces from each box to pair
-    int max_pair[2];
-    MPI_Allreduce(my_pair, max_pair, 1, MPI_2INT, MPI_MAXLOC, world);
-    int send_comm = max_pair[1];
+    //int max_pair[2];
+    //MPI_Allreduce(my_pair, max_pair, 1, MPI_2INT, MPI_MAXLOC, world);
+    //int send_comm = max_pair[1];
 
     // have send comm bcast info
-    MPI_Bcast(&q_iatom, 1, MPI_DOUBLE, send_comm, world);
-    MPI_Bcast(&type_iatom, 1, MPI_INT, send_comm, world);
-    MPI_Bcast(&mask_iatom, 1, MPI_INT, send_comm, world);
-    MPI_Bcast(&vx, 1, MPI_DOUBLE, send_comm, world);
-    MPI_Bcast(&vy, 1, MPI_DOUBLE, send_comm, world);
-    MPI_Bcast(&vz, 1, MPI_DOUBLE, send_comm, world);
+    //MPI_Bcast(&q_iatom, 1, MPI_DOUBLE, send_comm, world);
+    //MPI_Bcast(&type_iatom, 1, MPI_INT, send_comm, world);
+    //MPI_Bcast(&mask_iatom, 1, MPI_INT, send_comm, world);
+    //MPI_Bcast(&vx, 1, MPI_DOUBLE, send_comm, world);
+    //MPI_Bcast(&vy, 1, MPI_DOUBLE, send_comm, world);
+    //MPI_Bcast(&vz, 1, MPI_DOUBLE, send_comm, world);
 
     //printf("%i - %i max_pair: %i -> %i %i\n",
     //  myworld, mycomm, iatom, max_pair[0], max_pair[1]);

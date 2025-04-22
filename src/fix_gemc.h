@@ -114,6 +114,10 @@ class FixGEMC : public Fix {
   class RanPark *random_world; // sync'd RNG for one world
   class RanPark *random_proc; // RNG for each proc (not sync'd)
 
+  // additional comm for exchange
+
+  double *buf_send, *buf_recv;    // bufs used in migrate_atoms
+
   // subroutines //
 
   // optional args that user can provide

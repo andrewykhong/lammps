@@ -147,6 +147,10 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
   // read options from end of input line
 
   //options(narg-12,&arg[12]);
+
+  // for exchange
+  memory->create(buf_coord, 3, "comm:buf_coord);
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -155,6 +159,8 @@ FixGEMC::~FixGEMC()
 {
   MPI_Comm_free(&comm_replica);
   //memory->destroy(commbuf); // causing seg fault if no commbuf initialized
+
+  memory->destroy(buf_coord);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -464,6 +470,54 @@ double FixGEMC::energy_full()
   return total_energy;
 }
 
+/* ----------------------------------------------------------------------
+   set bufextra based on AtomVec and fixes
+   similar to Comm::init_exchange()
+------------------------------------------------------------------------- */
+
+void FixGEMC::init_exchange()
+{
+  int maxexchange_fix = 0;
+  for (auto &ifix : modify->get_fix_list())
+    maxexchange_fix = MAX(maxexchange_fix, ifix->maxexchange);
+
+  bufextra = atom->avec->maxexchange + maxexchange_fix + BUFEXTRA;
+}
+
+/* ----------------------------------------------------------------------
+   realloc the size of the send buffer as needed with BUFFACTOR and bufextra
+   flag = 0, don't need to realloc with copy, just free/malloc w/ BUFFACTOR
+   flag = 1, realloc with BUFFACTOR
+   flag = 2, free/malloc w/out BUFFACTOR
+   same as Comm::grow_send()
+------------------------------------------------------------------------- */
+
+void FixGEMC::grow_send(int n, int flag)
+{
+  if (flag == 0) {
+    maxsend = static_cast<int> (BUFFACTOR * n);
+    memory->destroy(buf_send);
+    memory->create(buf_send,maxsend+bufextra,"comm:buf_send");
+  } else if (flag == 1) {
+    maxsend = static_cast<int> (BUFFACTOR * n);
+    memory->grow(buf_send,maxsend+bufextra,"comm:buf_send");
+  } else {
+    memory->destroy(buf_send);
+    memory->grow(buf_send,maxsend+bufextra,"comm:buf_send");
+  }
+}
+
+/* ----------------------------------------------------------------------
+   free/malloc the size of the recv buffer as needed with BUFFACTOR
+   same as Comm::grow_recv()
+------------------------------------------------------------------------- */
+
+void FixGEMC::grow_recv(int n)
+{
+  maxrecv = static_cast<int> (BUFFACTOR * n);
+  memory->destroy(buf_recv);
+  memory->create(buf_recv,maxrecv,"comm:buf_recv");
+}
 
 
 
