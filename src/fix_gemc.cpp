@@ -23,6 +23,7 @@
 #include "fix_gemc.h"
 
 #include "atom.h"
+#include "atom_vec.h"
 #include "comm.h"
 #include "compute.h"
 #include "domain.h"
@@ -80,11 +81,19 @@ static constexpr double MAXENERGYSIGNAL = 1.0e100;
 
 static constexpr double MAXENERGYTEST = 1.0e50;
 
+static constexpr double BUFFACTOR = 1.2;
+
+// const std::vector<std::string> AtomVec::default_exchange = {"id",    "type", "mask",
+//                                                            "image", "x",    "v"};
+static constexpr int BUFMIN = 11;
+
 /* ---------------------------------------------------------------------- */
 
 // not sure what all these nullptrs are for
 FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
 {
+  buf = NULL;
+
   if (narg < 12) utils::missing_cmd_args(FLERR, "fix gemc", error);
   // must have only two boxes
 
@@ -147,10 +156,6 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
   // read options from end of input line
 
   //options(narg-12,&arg[12]);
-
-  // for exchange
-  memory->create(buf_coord, 3, "comm:buf_coord);
-
 }
 
 /* ---------------------------------------------------------------------- */
@@ -158,9 +163,7 @@ FixGEMC::FixGEMC(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
 FixGEMC::~FixGEMC()
 {
   MPI_Comm_free(&comm_replica);
-  //memory->destroy(commbuf); // causing seg fault if no commbuf initialized
-
-  memory->destroy(buf_coord);
+  memory->destroy(buf);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -264,6 +267,11 @@ void FixGEMC::init()
   // turn off interactions between group all and the exclusion group
 
   neighbor->modify_params(fmt::format("exclude group {} all",group_id));
+
+  // for exchange
+
+  maxbuf = (init_exchange() + BUFMIN) * BUFFACTOR;
+  memory->create(buf,maxbuf,"fix_gemc:buf");
 }
 
 /* ----------------------------------------------------------------------
@@ -313,34 +321,32 @@ void FixGEMC::pre_exchange()
   // update next time to call
   next_reneighbor = update->ntimestep + nevery;
 
-  // don't need pairwise for current use case
-
   // translation seems to be fully working
   double imove;
   update_gas_atoms_list();
-  if (full_flag) {
-    energy_stored = energy_full();
-    if (overlap_flag && energy_stored > MAXENERGYTEST)
-        error->warning(FLERR,"fix gemc: Energy of old configuration > MAXENERGYTEST");
 
-    for (int i = 0; i < nmoves; i++) {
-      imove = random_universe->uniform();
+  energy_stored = energy_full();
+  if (overlap_flag && energy_stored > MAXENERGYTEST)
+      error->warning(FLERR,"fix gemc: Energy of old configuration > MAXENERGYTEST");
 
-      // DEBUG : Check if RNG sync'd
-      //if (myworld == 0)
-      //  printf("%i - %i; imove: %g: %i/%i\n", myworld, mycomm, imove, i, nmoves);
+  for (int i = 0; i < nmoves; i++) {
+    imove = random_universe->uniform();
+
+    // DEBUG : Check if RNG sync'd
+    //if (myworld == 0)
+    //  printf("%i - %i; imove: %g: %i/%i\n", myworld, mycomm, imove, i, nmoves);
 
 
-      //attempt_atomic_translation_full();
-      //attempt_volume_change_full();
-      attempt_atomic_exchange_full();
-      //if (imove < pc_exchange) attempt_atomic_exchange_full();
-      //else if (imove < pc_volume) attempt_volume_change_full();
-      //else attempt_atomic_translation_full();
-    }
-  } // TODO: Add not full option
+    //attempt_atomic_translation_full();
+    //attempt_volume_change_full();
+    attempt_atomic_exchange_full();
+    //error->one(FLERR,"exchange done\n");
+    //if (imove < pc_exchange) attempt_atomic_exchange_full();
+    //else if (imove < pc_volume) attempt_volume_change_full();
+    //else attempt_atomic_translation_full();
+  }
 
-  //error->one(FLERR,"end of pre");
+ // error->one(FLERR,"end of pre");
 }
 
 /* ----------------------------------------------------------------------
@@ -472,54 +478,17 @@ double FixGEMC::energy_full()
 
 /* ----------------------------------------------------------------------
    set bufextra based on AtomVec and fixes
+   does not include base data to exchange
    similar to Comm::init_exchange()
 ------------------------------------------------------------------------- */
 
-void FixGEMC::init_exchange()
+int FixGEMC::init_exchange()
 {
   int maxexchange_fix = 0;
   for (auto &ifix : modify->get_fix_list())
     maxexchange_fix = MAX(maxexchange_fix, ifix->maxexchange);
 
-  bufextra = atom->avec->maxexchange + maxexchange_fix + BUFEXTRA;
+  return atom->avec->maxexchange + maxexchange_fix;
 }
-
-/* ----------------------------------------------------------------------
-   realloc the size of the send buffer as needed with BUFFACTOR and bufextra
-   flag = 0, don't need to realloc with copy, just free/malloc w/ BUFFACTOR
-   flag = 1, realloc with BUFFACTOR
-   flag = 2, free/malloc w/out BUFFACTOR
-   same as Comm::grow_send()
-------------------------------------------------------------------------- */
-
-void FixGEMC::grow_send(int n, int flag)
-{
-  if (flag == 0) {
-    maxsend = static_cast<int> (BUFFACTOR * n);
-    memory->destroy(buf_send);
-    memory->create(buf_send,maxsend+bufextra,"comm:buf_send");
-  } else if (flag == 1) {
-    maxsend = static_cast<int> (BUFFACTOR * n);
-    memory->grow(buf_send,maxsend+bufextra,"comm:buf_send");
-  } else {
-    memory->destroy(buf_send);
-    memory->grow(buf_send,maxsend+bufextra,"comm:buf_send");
-  }
-}
-
-/* ----------------------------------------------------------------------
-   free/malloc the size of the recv buffer as needed with BUFFACTOR
-   same as Comm::grow_recv()
-------------------------------------------------------------------------- */
-
-void FixGEMC::grow_recv(int n)
-{
-  maxrecv = static_cast<int> (BUFFACTOR * n);
-  memory->destroy(buf_recv);
-  memory->create(buf_recv,maxrecv,"comm:buf_recv");
-}
-
-
-
 
 

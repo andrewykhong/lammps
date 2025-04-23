@@ -103,9 +103,9 @@ class FixGEMC : public Fix {
   // for communication
 
   int myworld;
-  int mycomm;
+  int mycomm; // rank in my world
   int nprocs;
-  int myrank_replica;
+  int myrank_replica; // rand between boxes
 
   double *commbuf;
   MPI_Comm comm_replica; // for communication between partitions
@@ -114,9 +114,10 @@ class FixGEMC : public Fix {
   class RanPark *random_world; // sync'd RNG for one world
   class RanPark *random_proc; // RNG for each proc (not sync'd)
 
-  // additional comm for exchange
+  // additional comm (mostly for exchange)
 
-  double *buf_send, *buf_recv;    // bufs used in migrate_atoms
+  int maxbuf;           // size of buf send/recv in # of doubles
+  double *buf;    // bufs used in migrate_atoms
 
   // subroutines //
 
@@ -140,6 +141,9 @@ class FixGEMC : public Fix {
 
   void attempt_atomic_exchange_full();
   void attempt_molecule_exchange_full();
+
+  int init_exchange();
+  void grow_sendrecv();
 
   // misc functions for all MC moves
 

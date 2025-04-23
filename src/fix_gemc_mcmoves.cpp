@@ -38,6 +38,9 @@ using namespace LAMMPS_NS;
 
 static constexpr double MAXENERGYTEST = 1.0e50;
 
+static constexpr double BUFFACTOR = 1.2;
+static constexpr int BUFMIN = 11;
+
 /* ----------------------------------------------------------------------
   Shrink/expand boxes (always requires full energy)
 ------------------------------------------------------------------------- */
@@ -245,6 +248,7 @@ void FixGEMC::attempt_volume_change_full()
 /* ----------------------------------------------------------------------
   Attempt atom exchange
 ------------------------------------------------------------------------- */
+// TODO: do we need the force->kspace and force->pair->tail_flag?
 void FixGEMC::attempt_atomic_exchange_full()
 {
   nexchange_attempts++;
@@ -261,130 +265,68 @@ void FixGEMC::attempt_atomic_exchange_full()
   }
   MPI_Bcast(&sender, 1, MPI_INT, 0, world);
 
-  // check roles are sync'd
-  //if (myworld == 0)
-  //  printf("%i/%i - sender? %i\n", myworld, mycomm, sender);
-  //error->one(FLERR,"ck");
-
-  //double energy_ck = energy_full();
-  //printf("should be same %i/%i - %g -> %g\n",
-  //  myworld, mycomm, energy_stored, energy_ck);
-
-  // set up for atom exchange
-  init_exchange();
-
-
-
-  int nsend;
-  int send_comm;
+  // set up for atom exchange and grow the send and receive buffers (if needed)
+  int maxbuf_tmp = init_exchange() + BUFMIN;
+  if (maxbuf_tmp > maxbuf) {
+    maxbuf = maxbuf_tmp * BUFFACTOR;
+    memory->grow(buf,maxbuf,"fix_gemc:buf_send");
+  }
 
   // atom to delete/insert
-  int iatom;
+  int iatom = -1;
+  int tmp_mask;
 
-  // these are temporarily stored
+  // save old coordinates in case exchange rejected
+  double old_coord[3];
 
+  // pick atom to send
   if (sender) {
-    // pick one atom randomly from all atoms in system
+    // pick one atom randomly from all atoms in box
     // only one proc will actually delete atom
     iatom = pick_random_gas_atom();
-
-    //printf("%i/%i - atom? %i\n", myworld, mycomm, iatom);
-
-    // have associated proc pack atom
     if (iatom >= 0) {
-      nsend = atom->avec->pack_exchange(iatom,&buf_send);
-      // not sure if these are needed
-      //if (force->kspace) force->kspace->qsum_qsq();
-      //if (force->pair->tail_flag) force->pair->reinit();
+      // save old coordinates
+      old_coord[0] = atom->x[iatom][0];
+      old_coord[1] = atom->x[iatom][1];
+      old_coord[2] = atom->x[iatom][2]; 
 
-      // send to proc 0 if it doesn't already have it
-      if (mycomm != 0)
-        MPI_Send(&buf_send, nsend, MPI_DOUBLE, 0, 0, world);
+      // pack atom (only one atom sent per move)
+      atom->avec->pack_exchange(iatom,&buf[0]);
+
+      // temporarily set mask to exclusion for full energy later
+      tmp_mask = atom->mask[iatom];
+      atom->mask[iatom] = exclusion_group_bit;
     }
 
-    //int my_pair[2];
-    //my_pair[0] = iatom;
-    //my_pair[1] = mycomm;
-
-    // find which proces from each box to pair
-    //int max_pair[2];
-    //MPI_Allreduce(my_pair, max_pair, 1, MPI_2INT, MPI_MAXLOC, world);
-    //int send_comm = max_pair[1];
-
-    // have send comm bcast info
-    //MPI_Bcast(&q_iatom, 1, MPI_DOUBLE, send_comm, world);
-    //MPI_Bcast(&type_iatom, 1, MPI_INT, send_comm, world);
-    //MPI_Bcast(&mask_iatom, 1, MPI_INT, send_comm, world);
-    //MPI_Bcast(&vx, 1, MPI_DOUBLE, send_comm, world);
-    //MPI_Bcast(&vy, 1, MPI_DOUBLE, send_comm, world);
-    //MPI_Bcast(&vz, 1, MPI_DOUBLE, send_comm, world);
-
-    //printf("%i - %i max_pair: %i -> %i %i\n",
-    //  myworld, mycomm, iatom, max_pair[0], max_pair[1]);
-
-    // at this point, one of the procs in the box has deleted.
-    // all procs
-
-    //printf("%i/%i - atom_type? %i\n", myworld, mycomm, type_iatom);
-    //printf("%i/%i - v? %g,%g,%g\n",
-    //  myworld, mycomm, vx, vy, vz);
-
-    // have comm 0 reduce since it may not be the one deleting
-    //MPI_Reduce(&my_iatom_type, &iatom_type, 1, MPI_INT, MPI_SUM, 0, world);
-    //MPI_Reduce(&my_mask_iatom, &mask_iatom, 1, MPI_INT, MPI_SUM, 0, world);
-    //MPI_Reduce(&my_q_iatom,    &q_iatom,    1, MPI_DOUBLE, MPI_SUM, 0, world);
-    //MPI_Reduce(&my_vx, &vx, 1, MPI_DOUBLE, MPI_SUM, 0, world);
-    //MPI_Reduce(&my_vy, &vy, 1, MPI_DOUBLE, MPI_SUM, 0, world);
-    //MPI_Reduce(&my_vz, &vz, 1, MPI_DOUBLE, MPI_SUM, 0, world);
-
-    //printf("%i/%i - atom_type? %i\n", myworld, mycomm, iatom_type);
-    //printf("%i/%i - v? %g,%g,%g\n",
-    //  myworld, mycomm, vx,vy,vz);
+    // send buffer from to comm 0 with
+    // each exchange move will only have two procs send/recv per box
+    // don't need mpi_barrier
+    // exclude case where comm 0 already has the information
+    if (iatom >= 0 && mycomm != 0) {
+      MPI_Send(&buf[0], maxbuf, MPI_DOUBLE, 0, 0, world);
+    } else if (iatom < 0 && mycomm == 0) {
+      MPI_Recv(&buf[0], maxbuf, MPI_DOUBLE, MPI_ANY_SOURCE,
+               0, world, MPI_STATUS_IGNORE);
+    }
   }
 
-  //energy_after = energy_full();
-  //printf("%i/%i - e after? %g\n", myworld, mycomm, energy_after);
-
-  // tell other box the atome type, mask, charge, and velocity it's receiving
-  // there could be a lot more. pack exchange within atom_vec
-
-  /*
-
-  int recv_iatom_type, recv_mask_iatom;
-  double recv_q_iatom;
-  double recv_vx, recv_vy, recv_vz;
+  // send over atom thru comm 0's
   if (mycomm == 0) {
-    if (sender) {
-      MPI_Allreduce(&iatom_type, &all_iatom_type, 1, MPI_INT, MPI_SUM, comm_replica);
-      MPI_Allreduce(&mask_iatom, &all_mask_iatom, 1, MPI_INT, MPI_SUM, comm_replica);
-      MPI_Allreduce(&q_iatom,    &all_q_iatom, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
-      MPI_Allreduce(&vx, &all_vx, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
-      MPI_Allreduce(&vy, &all_vy, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
-      MPI_Allreduce(&vz, &all_vz, 1, MPI_DOUBLE, MPI_SUM, comm_replica);
-    } else {
-
-    }
+    // send buffer from sender to receiver
+    // there's only two procs in comm_replica, so other is always 1-myrank
+    if (sender) MPI_Send(&buf[0], maxbuf, MPI_DOUBLE,
+                         1-myrank_replica, 0, comm_replica);
+    else MPI_Recv(&buf[0], maxbuf, MPI_DOUBLE,
+                  MPI_ANY_SOURCE, 0, comm_replica, MPI_STATUS_IGNORE);
   }
 
-  // tell all other procs the atom props
-  MPI_Bcast(&all_iatom_type, 1, MPI_INT, 0, world);
-  MPI_Bcast(&all_mask_iatom, 1, MPI_INT, 0, world);
-  MPI_Bcast(&all_q_iatom, 1, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&all_vx, 1, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&all_vy, 1, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&all_vz, 1, MPI_DOUBLE, 0, world);
+  // for now bcast buf to all procs
+  if (!sender) MPI_Bcast(&buf[0], maxbuf, MPI_DOUBLE, 0, world);
 
-  */
-
-  // check everyone has same atom being exchanged
-  //printf("%i/%i - t %i m %i v? %g,%g,%g\n",
-  //  myworld, mycomm, all_iatom_type, all_mask_iatom,
-  //  all_vx, all_vy, all_vz);
-  //error->one(FLERR,"ck");
-
-  // then send the atom to other box
+  // pick random proc to place atom in
   int proc_flag = 0;
   if (!sender) {
+    // sample random point in box
     double lamda[3], coord[3];
     if (mycomm == 0) {
       if (triclinic_flag) {
@@ -406,12 +348,8 @@ void FixGEMC::attempt_atomic_exchange_full()
       }
     } // END mycomm
 
+    // find proc that contains coordinate
     MPI_Bcast(&coord, 3, MPI_DOUBLE, 0, world);
-
-    //printf("%i/%i - %g, %g, %g\n",
-    //  myworld, mycomm, coord[0], coord[1], coord[2]);
-
-    // find proc with this coordinate
     if (triclinic_flag) {
       if (lamda[0] >= sublo[0] && lamda[0] < subhi[0] &&
           lamda[1] >= sublo[1] && lamda[1] < subhi[1] &&
@@ -425,55 +363,49 @@ void FixGEMC::attempt_atomic_exchange_full()
           coord[2] >= sublo[2] && coord[2] < subhi[2]) proc_flag = 1;
     } // END if triclinic
 
+    // unpack atom here (only one atom should be received per move)
+    // this will also create an atom and add to list (only to nlocal)
     if (proc_flag) {
-      // unpack
-      atom->avec->create_atom(type_iatom,coord);
-      int jatom = atom->nlocal - 1;
+      atom->avec->unpack_exchange(&buf[0]);
 
-      // add to groups
-      // optionally add to type-based groups
+      int m = atom->nlocal - 1;
+      // overwrite coordinates with new ones
+      atom->x[m][0] = coord[0];
+      atom->x[m][1] = coord[1];
+      atom->x[m][2] = coord[2];
+    }
 
-      atom->mask[jatom] = mask_iatom;
-      atom->v[jatom][0] = vx;
-      atom->v[jatom][1] = vy;
-      atom->v[jatom][2] = vz;
-      if (q_flag) atom->q[jatom] = q_iatom;
-      modify->create_attribute(jatom);
-    } // END if proc_flag
-
+    // outside since all procs must update total atoms
+    // TODO: unpack_exchange increments nlocal. do we need to increment natoms?
     atom->natoms++;
 
-    // TODO: What is happening here
     // if tag's enabled, mapping local to global ids
     if (atom->tag_enable) {
       atom->tag_extend();
-      // cctually mapping
       if (atom->map_style != Atom::MAP_NONE) atom->map_init();
     }
 
     //atom->nghost = 0; // probably useless
-    if (triclinic_flag) domain->x2lamda(natom_local);
+    if (triclinic_flag) domain->x2lamda(natom_total);
     comm->borders();
     if (triclinic_flag) domain->lamda2x(natom_total);
     if (force->kspace) force->kspace->qsum_qsq();
     if (force->pair->tail_flag) force->pair->reinit();
   } // END if sender
 
-  // everyone call full_energy
+  // evalute probability for exchange
   double energy_before = energy_stored;
   double energy_after = energy_full();
 
-  // evalute probability for exchange
   int success;
   if (mycomm == 0) {
-    double dU;
+    double all_dU;
     double idU = energy_after-energy_before;
-    //printf("%i/%i - %g -> %g\n", myworld, mycomm, energy_before, energy_after);
-    MPI_Allreduce(&idU,&dU,1,MPI_DOUBLE,MPI_SUM,comm_replica);
-    //printf("%i/%i - %g -> %g\n", myworld, mycomm, idU, dU);
+    MPI_Allreduce(&idU,&all_dU,1,MPI_DOUBLE,MPI_SUM,comm_replica);
 
     double volume = (xhi-xlo)*(yhi-ylo)*(zhi-zlo);
     double NV;
+
     // TODO : I believe the send should be over current natoms - 1
     // ... does it included count if it has exclusion group bit?
     if (sender) NV = volume/(atom->natoms-1);
@@ -481,66 +413,54 @@ void FixGEMC::attempt_atomic_exchange_full()
     double allNV;
     MPI_Allreduce(&NV,&allNV,1,MPI_DOUBLE,MPI_PROD,comm_replica);
 
-    //printf("%i/%i - %g , %g-> %g\n", myworld, mycomm, volume, NV, allNV);
-
-    dU += (box_temp*force->boltz*log(allNV));
-    double prob = MIN(exp(-beta*dU),1.0);
+    all_dU += (box_temp*force->boltz*log(allNV));
+    double prob = MIN(exp(-beta*all_dU),1.0);
 
     if (prob > random_proc->uniform()) success = 1;
     else success = 0;
 
     MPI_Bcast(&success, 1, MPI_INT, 0, comm_replica);
-
-    //if (myworld == 0)
-    //  printf("%i/%i - prob: %g -> %g; success? %i\n",
-    //    myworld, mycomm, beta*dU, prob, success);
-
   }
   MPI_Bcast(&success, 1, MPI_INT, 0, world);
 
-  //if (myworld == 0)
-  //  printf("%i/%i - success? %i\n", myworld, mycomm, success);
-  //error->one(FLERR,"ck");
-
+  // handle deletion/insertions or revert
   if (sender) {
     // delete iatom
     if (success) {
       nexchange_successes++;
       if (iatom >= 0) {
+        // overwrite iatom with last atom details
         atom->avec->copy(atom->nlocal-1,iatom,1);
         atom->nlocal--;
       }
       atom->natoms--;
       if (atom->map_style != Atom::MAP_NONE) atom->map_init();
       energy_stored = energy_after;
-      //printf("%i/%i - deleted!\n", myworld, mycomm);
-    // revert iatom (do not delete)
+    // packing does not delete atom, just need to revert mask
     } else {
-      if (iatom >= 0) {
-        atom->mask[iatom] = mask_iatom;
-        if (q_flag) atom->q[iatom] = q_iatom;
-      }
+      if (iatom >= 0) atom->mask[iatom] = tmp_mask;
       if (force->kspace) force->kspace->qsum_qsq();
       if (force->pair->tail_flag) force->pair->reinit();
-      energy_stored = energy_before;
-      //printf("%i/%i - fail deleted!\n", myworld, mycomm);
     }
   } else {
-    // accept newly inserted iatomthere
+    // accept newly inserted iatom there
     if (success) {
       nexchange_successes++;
       energy_stored = energy_after;
-      //printf("%i/%i - stored!\n", myworld, mycomm);
-    // remove newly inserted iatom
+    // remove newly inserted iatom (it was added to end)
     } else {
       atom->natoms--;
       if (proc_flag) atom->nlocal--;
       if (force->kspace) force->kspace->qsum_qsq();
       if (force->pair->tail_flag) force->pair->reinit();
-      energy_stored = energy_before;
-      //printf("%i/%i - fail stored!\n", myworld, mycomm);
     }
   }
+
+  /*if (mycomm == 0 && myworld == 0) {
+    printf("sender? %i, natoms: %i / %i\n", sender, atom->nlocal, atom->natoms);
+    if (success) printf("success\n");
+    else printf("fail\n");
+  }*/
 
   // update counts
   update_gas_atoms_list();
