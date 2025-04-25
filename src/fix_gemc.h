@@ -119,6 +119,9 @@ class FixGEMC : public Fix {
   int maxbuf;           // size of buf send/recv in # of doubles
   double *buf;    // bufs used in migrate_atoms
 
+  // misc
+  int progress; // tracks remaining simulation time
+
   // subroutines //
 
   // optional args that user can provide

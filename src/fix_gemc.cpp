@@ -85,7 +85,8 @@ static constexpr double BUFFACTOR = 1.2;
 
 // const std::vector<std::string> AtomVec::default_exchange = {"id",    "type", "mask",
 //                                                            "image", "x",    "v"};
-static constexpr int BUFMIN = 11;
+// bufextra
+static constexpr int BUFMIN = 1024;
 
 /* ---------------------------------------------------------------------- */
 
@@ -179,6 +180,8 @@ int FixGEMC::setmask()
 
 void FixGEMC::init()
 {
+  progress = 0;
+
   // for comm
   myworld = universe->iworld;
   mycomm = comm->me;
@@ -332,18 +335,28 @@ void FixGEMC::pre_exchange()
   for (int i = 0; i < nmoves; i++) {
     imove = random_universe->uniform();
 
-    // DEBUG : Check if RNG sync'd
-    //if (myworld == 0)
-    //  printf("%i - %i; imove: %g: %i/%i\n", myworld, mycomm, imove, i, nmoves);
-
-
     //attempt_atomic_translation_full();
     //attempt_volume_change_full();
-    attempt_atomic_exchange_full();
-    //error->one(FLERR,"exchange done\n");
-    //if (imove < pc_exchange) attempt_atomic_exchange_full();
-    //else if (imove < pc_volume) attempt_volume_change_full();
-    //else attempt_atomic_translation_full();
+    //attempt_atomic_exchange_full();
+    if (imove < pc_exchange) attempt_atomic_exchange_full();
+    else if (imove < pc_volume) attempt_volume_change_full();
+    else attempt_atomic_translation_full();
+  }
+
+  // print progress info to universe screen/logfile
+  // from fix_alchemy
+
+  if (universe->me == 0) {
+    double delta = update->ntimestep - update->beginstep;
+    if ((delta != 0.0) && (update->beginstep != update->endstep))
+      delta /= update->endstep - update->beginstep;
+    int status = static_cast<int>(delta * 100.0);
+    if ((status / 10) > (progress / 10)) {
+      progress = status;
+      auto msg = fmt::format("  GEMC run progress: {:>3d}%\n", progress);
+      if (universe->uscreen) utils::print(universe->uscreen, msg);
+      if (universe->ulogfile) utils::print(universe->ulogfile, msg);
+    }
   }
 
  // error->one(FLERR,"end of pre");

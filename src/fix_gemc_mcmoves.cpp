@@ -39,13 +39,11 @@ using namespace LAMMPS_NS;
 static constexpr double MAXENERGYTEST = 1.0e50;
 
 static constexpr double BUFFACTOR = 1.2;
-static constexpr int BUFMIN = 11;
+static constexpr int BUFMIN = 1024;
 
 /* ----------------------------------------------------------------------
   Shrink/expand boxes (always requires full energy)
 ------------------------------------------------------------------------- */
-// TODO : got error
-//   "Neighbor list overflow, boost neigh_modify one (../npair_bin.cpp:248)"
 void FixGEMC::attempt_volume_change_full()
 {
   nvolume_attempts++;
@@ -155,7 +153,7 @@ void FixGEMC::attempt_volume_change_full()
 
   // change in potential due to volume change
   // TODO : should include both local and ghost? (is total computed correctly)
-  double dU_volume = natom_total*force->boltz*box_temp*log(fvolume);
+  double dU_volume = atom->natoms*force->boltz*box_temp*log(fvolume);
   // current system energy
   double energy_before = energy_stored;
 
@@ -174,17 +172,24 @@ void FixGEMC::attempt_volume_change_full()
   // bcast potential change to rest of world
   MPI_Bcast(&dU, 1, MPI_DOUBLE, 0, world);
 
+  //if (mycomm == 0)
+  //  printf("%i :: de_U: %g; de_vol: %g -> total: %g\n",
+  //    myworld, energy_after-energy_before, dU_volume, dU);
+
   // check potenital change sync'd
   //printf("%i/%i - %g\n", myworld, mycomm, dU);
   //error->one(FLERR,"ck");
 
   // evaluate probability
-  double prob;
-  if (dU <= 0.0) prob = 1.0;
-  else prob = MIN(exp(-beta*dU),1.0);
+  double prob = MIN(exp(-beta*dU),1.0);
+
+  double rf = random_universe->uniform();
+
+  //if (myworld == 0 && mycomm == 0)
+  //  printf("beta: %g; dU: %g; prob: %g - %g\n", beta, dU, prob, rf);
 
   // volume change rejected -> revert atom positions
-  if (prob > random_universe->uniform()) {
+  if (prob < rf) {
 
     //double energy_wrong = energy_full();
 
@@ -214,12 +219,12 @@ void FixGEMC::attempt_volume_change_full()
     Lz = zhi-zlo;
     volume = Lx*Ly*Lz;
 
-    //printf("%i/%i -- volume fail! - %g, %g\n", myworld, mycomm, dvolume, volume);
+    //if (mycomm == 0)
+    //  printf("%i volume fail! :: %g, %g\n", myworld, dvolume, volume);
 
     //double energy_ck = energy_full();
     //printf("should be same: %g - %g; wrong: %g\n",
     //  energy_stored, energy_ck, energy_wrong);
-    //error->one(FLERR,"Ck");
   // acccept volume change
   } else {
     nvolume_successes++;
@@ -240,7 +245,8 @@ void FixGEMC::attempt_volume_change_full()
       subhi = domain->subhi;
     }
 
-    //printf("%i/%i -- volume success! -- %g - %g\n", myworld, mycomm, dvolume, volume);
+    //if (mycomm == 0)
+    //  printf("%i volume success! :: %g, %g\n", myworld, dvolume, volume);
   }
   //delete irregular;
 }
@@ -275,6 +281,7 @@ void FixGEMC::attempt_atomic_exchange_full()
   // atom to delete/insert
   int iatom = -1;
   int tmp_mask;
+  double q_tmp;
 
   // save old coordinates in case exchange rejected
   double old_coord[3];
@@ -290,11 +297,19 @@ void FixGEMC::attempt_atomic_exchange_full()
       old_coord[1] = atom->x[iatom][1];
       old_coord[2] = atom->x[iatom][2]; 
 
+      // charged stored in avec
+      //atom->q[iatom] = 777935;
+
       // pack atom (only one atom sent per move)
       atom->avec->pack_exchange(iatom,&buf[0]);
 
       // temporarily set mask to exclusion for full energy later
       tmp_mask = atom->mask[iatom];
+      // temporarily zero out charge for kspace later)
+      if (q_flag) {
+        q_tmp = atom->q[iatom];
+        atom->q[iatom] = 0.0;
+      }
       atom->mask[iatom] = exclusion_group_bit;
     }
 
@@ -302,6 +317,7 @@ void FixGEMC::attempt_atomic_exchange_full()
     // each exchange move will only have two procs send/recv per box
     // don't need mpi_barrier
     // exclude case where comm 0 already has the information
+
     if (iatom >= 0 && mycomm != 0) {
       MPI_Send(&buf[0], maxbuf, MPI_DOUBLE, 0, 0, world);
     } else if (iatom < 0 && mycomm == 0) {
@@ -366,6 +382,7 @@ void FixGEMC::attempt_atomic_exchange_full()
     // unpack atom here (only one atom should be received per move)
     // this will also create an atom and add to list (only to nlocal)
     if (proc_flag) {
+      // confirmed that charge is stored in avec
       atom->avec->unpack_exchange(&buf[0]);
 
       int m = atom->nlocal - 1;
@@ -438,7 +455,11 @@ void FixGEMC::attempt_atomic_exchange_full()
       energy_stored = energy_after;
     // packing does not delete atom, just need to revert mask
     } else {
-      if (iatom >= 0) atom->mask[iatom] = tmp_mask;
+      // revert mask and charge if deletion rejected
+      if (iatom >= 0) {
+        atom->mask[iatom] = tmp_mask;
+        if (q_flag) atom->q[iatom] = q_tmp;
+      }
       if (force->kspace) force->kspace->qsum_qsq();
       if (force->pair->tail_flag) force->pair->reinit();
     }
@@ -455,12 +476,6 @@ void FixGEMC::attempt_atomic_exchange_full()
       if (force->pair->tail_flag) force->pair->reinit();
     }
   }
-
-  /*if (mycomm == 0 && myworld == 0) {
-    printf("sender? %i, natoms: %i / %i\n", sender, atom->nlocal, atom->natoms);
-    if (success) printf("success\n");
-    else printf("fail\n");
-  }*/
 
   // update counts
   update_gas_atoms_list();
