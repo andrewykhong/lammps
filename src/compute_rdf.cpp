@@ -159,6 +159,7 @@ ComputeRDF::~ComputeRDF()
   delete[] ihi;
   delete[] jlo;
   delete[] jhi;
+  delete[] rev;
   memory->destroy(hist);
   memory->destroy(histall);
   memory->destroy(array);
@@ -213,7 +214,7 @@ void ComputeRDF::init()
   //   (until next reneighbor), so it needs to contain atoms further
   //   than cutoff_user apart, just like a normal neighbor list does
 
-  auto req = neighbor->add_request(this, NeighConst::REQ_OCCASIONAL);
+  auto *req = neighbor->add_request(this, NeighConst::REQ_OCCASIONAL);
   if (cutflag) {
     if ((neighbor->style == Neighbor::MULTI) || (neighbor->style == Neighbor::MULTI_OLD))
       error->all(FLERR, Error::NOLASTLINE,

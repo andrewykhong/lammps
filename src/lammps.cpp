@@ -528,8 +528,7 @@ LAMMPS::LAMMPS(int narg, char **arg, MPI_Comm communicator) :
       if (helpflag == 0) {
         universe->ulogfile = fopen("log.lammps","w");
         if (universe->ulogfile == nullptr)
-          error->universe_warn(FLERR,"Cannot open log.lammps for writing: "
-                               + utils::getsyserror());
+          error->universe_warn(FLERR,"Cannot open log.lammps for writing: " + utils::getsyserror());
       }
     } else if (strcmp(arg[logflag],"none") == 0)
       universe->ulogfile = nullptr;
@@ -561,8 +560,9 @@ LAMMPS::LAMMPS(int narg, char **arg, MPI_Comm communicator) :
       if (inflag <= 0) infile = stdin;
       else if (strcmp(arg[inflag], "none") == 0) infile = stdin;
       else infile = fopen(arg[inflag],"r");
+
       if (infile == nullptr)
-        error->all(FLERR,"Cannot open input script {}: {}", arg[inflag], utils::getsyserror());
+        error->one(FLERR,"Cannot open input script {}: {}", arg[inflag], utils::getsyserror());
       if (!helpflag)
         utils::logmesg(this,"LAMMPS ({}{})\n", version, update_string);
 
@@ -661,8 +661,8 @@ LAMMPS::LAMMPS(int narg, char **arg, MPI_Comm communicator) :
     }
 
     if ((me == 0) && (!helpflag))
-      utils::logmesg(this,"LAMMPS ({}{})\nProcessor partition = {}\n", version,
-                     update_string, universe->iworld);
+      utils::logmesg(this,"LAMMPS ({}{})\nProcessor partition = {}\n", version, update_string,
+                     universe->iworld);
   }
 
   // check consistency of datatype settings in lmptype.h
@@ -789,10 +789,10 @@ LAMMPS::~LAMMPS() noexcept(false)
 
   double totalclock = platform::walltime() - initclock;
   if ((me == 0) && (screen || logfile)) {
-    int seconds = fmod(totalclock,60.0);
+    auto seconds = (int) fmod(totalclock,60.0);
     totalclock  = (totalclock - seconds) / 60.0;
-    int minutes = fmod(totalclock,60.0);
-    int hours = (totalclock - minutes) / 60.0;
+    auto minutes = (int) fmod(totalclock,60.0);
+    auto hours = (int) ((totalclock - minutes) / 60.0);
     utils::logmesg(this, "Total wall time: {}:{:02d}:{:02d}\n", hours, minutes, seconds);
   }
 
@@ -884,8 +884,9 @@ void LAMMPS::create()
 
   python = new Python(this);
 
-  // auto-load plugins
+  // restore and auto-load plugins
 #if defined(LMP_PLUGIN)
+  plugin_restore(this, true);
   plugin_auto_load(this);
 #endif
 }
@@ -992,11 +993,6 @@ void LAMMPS::init()
 
 void LAMMPS::destroy()
 {
-  // must wipe out all plugins first, if configured
-#if defined(LMP_PLUGIN)
-  plugin_clear(this);
-#endif
-
   delete update;
   update = nullptr;
 
@@ -1144,19 +1140,6 @@ void _noopt LAMMPS::init_pkg_lists()
 #include "packages_region.h"
 #undef RegionStyle
 #undef REGION_CLASS
-}
-
-/** Return true if a LAMMPS package is enabled in this binary
- *
- * \param pkg name of package
- * \return true if yes, else false
- */
-bool LAMMPS::is_installed_pkg(const char *pkg)
-{
-  for (int i=0; installed_packages[i] != nullptr; ++i)
-    if (strcmp(installed_packages[i],pkg) == 0) return true;
-
-  return false;
 }
 
 #define check_for_match(style,list,name)                                \
@@ -1457,6 +1440,7 @@ void LAMMPS::print_config(FILE *fp)
              platform::compiler_info(),platform::openmp_standard(),
              platform::cxx_standard());
   fputs(Info::get_fmt_info().c_str(),fp);
+  fputs(Info::get_json_info().c_str(),fp);
 
   int major,minor;
   std::string infobuf = platform::mpi_info(major,minor);

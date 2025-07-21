@@ -516,7 +516,7 @@ TEST(PairStyle, plain)
 
 TEST(PairStyle, omp)
 {
-    if (!LAMMPS::is_installed_pkg("OPENMP")) GTEST_SKIP();
+    if (!Info::has_package("OPENMP")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
 
     LAMMPS::argv args = {"PairStyle", "-log", "none", "-echo", "screen", "-nocite",
@@ -648,9 +648,12 @@ TEST(PairStyle, omp)
 
 TEST(PairStyle, kokkos_omp)
 {
-    if (!LAMMPS::is_installed_pkg("KOKKOS")) GTEST_SKIP();
+    if (!Info::has_package("KOKKOS")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
-    if (!Info::has_accelerator_feature("KOKKOS", "api", "openmp")) GTEST_SKIP();
+    // test either OpenMP or Serial
+    if (!Info::has_accelerator_feature("KOKKOS", "api", "serial") &&
+        !Info::has_accelerator_feature("KOKKOS", "api", "openmp"))
+        GTEST_SKIP();
     // if KOKKOS has GPU support enabled, it *must* be used. We cannot test OpenMP only.
     if (Info::has_accelerator_feature("KOKKOS", "api", "cuda") ||
         Info::has_accelerator_feature("KOKKOS", "api", "hip") ||
@@ -660,6 +663,8 @@ TEST(PairStyle, kokkos_omp)
 
     LAMMPS::argv args = {"PairStyle", "-log", "none", "-echo", "screen", "-nocite",
                          "-k",        "on",   "t",    "4",     "-sf",    "kk"};
+    // fall back to serial if openmp is not available
+    if (!Info::has_accelerator_feature("KOKKOS", "api", "openmp")) args[9] = "1";
 
     // cannot run dpd styles in plain or hybrid with more than 1 thread due to using multiple pRNGs
     if (utils::strmatch(test_config.pair_style, "^dpd") ||
@@ -796,7 +801,7 @@ TEST(PairStyle, kokkos_omp)
 
 TEST(PairStyle, gpu)
 {
-    if (!LAMMPS::is_installed_pkg("GPU")) GTEST_SKIP();
+    if (!Info::has_package("GPU")) GTEST_SKIP();
     if (!Info::has_gpu_device()) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
 
@@ -854,8 +859,8 @@ TEST(PairStyle, gpu)
         epsilon *= 5.0e8;
     else
         epsilon *= 1.0e10;
-        // relax test precision when using pppm and single precision FFTs, but only when also
-        // running with double precision
+    // relax test precision when using pppm and single precision FFTs, but only when also
+    // running with double precision
 #if defined(FFT_SINGLE)
     if (lmp->force->kspace && lmp->force->kspace->compute_flag &&
         Info::has_accelerator_feature("GPU", "precision", "double"))
@@ -894,7 +899,7 @@ TEST(PairStyle, gpu)
 
 TEST(PairStyle, intel)
 {
-    if (!LAMMPS::is_installed_pkg("INTEL")) GTEST_SKIP();
+    if (!Info::has_package("INTEL")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
 
     LAMMPS::argv args = {"PairStyle", "-log",  "none", "-echo", "screen", "-nocite",
@@ -985,7 +990,7 @@ TEST(PairStyle, intel)
 
 TEST(PairStyle, opt)
 {
-    if (!LAMMPS::is_installed_pkg("OPT")) GTEST_SKIP();
+    if (!Info::has_package("OPT")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
 
     LAMMPS::argv args = {"PairStyle", "-log", "none", "-echo", "screen", "-nocite", "-sf", "opt"};

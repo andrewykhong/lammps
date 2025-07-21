@@ -94,6 +94,17 @@ enum _LMP_VAR_CONST {
   LMP_VAR_STRING = 3  /*!< return value will be a string (catch-all) */
 };
 
+/** Neighbor list settings constants
+ *
+ * Must be kept in sync with the equivalent constants in ``python/lammps/constants.py``,
+ * ``fortran/lammps.f90``, ``tools/swig/lammps.i``, and
+ * ``examples/COUPLE/plugin/liblammpsplugin.h`` */
+
+enum _LMP_NEIGH_CONST {
+  LMP_NEIGH_HALF = 0,  /*!< request (default) half neighbor list */
+  LMP_NEIGH_FULL = 1,  /*!< request full neighbor list */
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -109,6 +120,7 @@ struct _liblammpsplugin {
   int abiversion;
   int has_exceptions;
   void *handle;
+
 #if defined(LAMMPS_LIB_MPI)
   void *(*open)(int, char **, MPI_Comm, void **);
 #else
@@ -122,6 +134,7 @@ struct _liblammpsplugin {
   void (*mpi_finalize)();
   void (*kokkos_finalize)();
   void (*python_finalize)();
+  void (*plugin_finalize)();
 
   void (*error)(void *, int, const char *);
   char *(*expand)(void *, const char *);
@@ -187,15 +200,19 @@ struct _liblammpsplugin {
  * the ifdef ensures they are compatible with rest of LAMMPS
  * caller must match to how LAMMPS library is built */
 
-#ifndef LAMMPS_BIGBIG
- int (*create_atoms)(void *, int, int *, int *, double *, double *, int *, int);
+#if !defined(LAMMPS_BIGBIG)
+ int (*create_atoms)(void *, int, const int *, const int *, const double *, const double *,
+                     const int *, int);
 #else
-  int (*create_atoms)(void *, int, int64_t *, int *, double *, double *, int64_t *, int);
+  int (*create_atoms)(void *, int, const int64_t *, const int *, const double *, const double *,
+                      const int64_t *, int);
 #endif
+  int (*create_molecule)(void *, const char *, const char *);
 
   int (*find_pair_neighlist)(void *, const char *, int, int, int);
   int (*find_fix_neighlist)(void *, const char *, int);
   int (*find_compute_neighlist)(void *, const char *, int);
+  int (*request_single_neighlist)(void *, const char *, int, double);
   int (*neighlist_num_elements)(void *, int);
   void (*neighlist_element_neighbors)(void *, int, int, int *, int *, int **);
 
@@ -255,6 +272,7 @@ struct _liblammpsplugin {
 
   int (*has_error)(void *);
   int (*get_last_error_message)(void *, char *, int);
+  int (*set_show_error)(void *, const int);
 
   int (*python_api_version)();
 };

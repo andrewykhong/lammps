@@ -19,6 +19,7 @@
 #include "error.h"
 #include "ewald_const.h"
 #include "force.h"
+#include "info.h"
 #include "kspace.h"
 #include "math_const.h"
 #include "memory.h"
@@ -145,7 +146,7 @@ void PairBuckCoulLong::compute(int eflag, int vflag)
             rsq_lookup.f = rsq;
             itable = rsq_lookup.i & ncoulmask;
             itable >>= ncoulshiftbits;
-            fraction = (rsq_lookup.f - rtable[itable]) * drtable[itable];
+            fraction = ((double) rsq_lookup.f - rtable[itable]) * drtable[itable];
             table = ftable[itable] + fraction*dftable[itable];
             forcecoul = qtmp*q[j] * table;
             if (factor_coul < 1.0) {
@@ -292,7 +293,9 @@ void PairBuckCoulLong::coeff(int narg, char **arg)
 
 double PairBuckCoulLong::init_one(int i, int j)
 {
-  if (setflag[i][j] == 0) error->all(FLERR,"All pair coeffs are not set");
+  if (setflag[i][j] == 0)
+    error->all(FLERR, Error::NOLASTLINE,
+               "All pair coeffs are not set. Status\n" + Info::get_pair_coeff_status(lmp));
 
   double cut = MAX(cut_lj[i][j],cut_coul);
   cut_ljsq[i][j] = cut_lj[i][j] * cut_lj[i][j];
@@ -510,7 +513,7 @@ double PairBuckCoulLong::single(int i, int j, int itype, int jtype,
       rsq_lookup.f = rsq;
       itable = rsq_lookup.i & ncoulmask;
       itable >>= ncoulshiftbits;
-      fraction = (rsq_lookup.f - rtable[itable]) * drtable[itable];
+      fraction = ((double) rsq_lookup.f - rtable[itable]) * drtable[itable];
       table = ftable[itable] + fraction*dftable[itable];
       forcecoul = atom->q[i]*atom->q[j] * table;
       if (factor_coul < 1.0) {

@@ -50,6 +50,7 @@ extensions = [
     'sphinx.ext.mathjax',
     'sphinx.ext.imgmath',
     'sphinx.ext.autodoc',
+    'sphinx_toolbox.collapse',
     'lammps_theme',
     'sphinxcontrib.jquery',
     'sphinxfortran.fortran_domain',
@@ -57,7 +58,8 @@ extensions = [
     'table_from_list',
     'tab_or_note',
     'breathe',
-    'sphinx_design'
+    'sphinx_design',
+    'sphinx_sitemap'
 ]
 
 images_config = {
@@ -217,7 +219,7 @@ html_css_files = ['css/lammps.css',]
 # Add any extra paths that contain custom files (such as robots.txt or
 # .htaccess) here, relative to this directory. These files are copied
 # directly to the root of the documentation.
-#html_extra_path = []
+html_extra_path = ['_extra',]
 
 # If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
 # using the given strftime format.
@@ -288,7 +290,7 @@ rst_prolog = r"""
 
 .. only:: html
 
-   :math:`\renewcommand{\AA}{\textup{\r{A}}`
+   :math:`\renewcommand{\AA}{\text{Å}}`
 
 .. role:: lammps(code)
     :language: LAMMPS
@@ -384,8 +386,8 @@ latex_elements = {
       \vfill
       {\LARGE \lammpsversion \par}
       \vfill
-      {\LARGE The LAMMPS Developers \par}
-      {\Large developers@lammps.org $^*$ \par}
+      {\LARGE The LAMMPS Developers$^*$ \par}
+      {\Large developers@lammps.org \par}
       \vfill\vfill\vfill
       {\normalsize ${}^*$ see
         \sphinxhref{https://www.lammps.org/authors.html}{https://www.lammps.org/authors.html}
@@ -528,6 +530,11 @@ breathe_domain_by_extension = { 'h'   : 'cpp',
                                 'cpp' : 'cpp',
                                 'c'   : 'c',
                                 }
+
+# sitemap configuration
+
+sitemap_url_scheme = "{link}"
+sitemap_filename = "sitemap.xml"
 
 # allows showing multiple versions
 try:

@@ -435,7 +435,7 @@ TEST(AngleStyle, plain)
 
 TEST(AngleStyle, omp)
 {
-    if (!LAMMPS::is_installed_pkg("OPENMP")) GTEST_SKIP();
+    if (!Info::has_package("OPENMP")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
 
     LAMMPS::argv args = {"AngleStyle", "-log", "none", "-echo", "screen", "-nocite",
@@ -548,9 +548,12 @@ TEST(AngleStyle, omp)
 
 TEST(AngleStyle, kokkos_omp)
 {
-    if (!LAMMPS::is_installed_pkg("KOKKOS")) GTEST_SKIP();
+    if (!Info::has_package("KOKKOS")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
-    if (!Info::has_accelerator_feature("KOKKOS", "api", "openmp")) GTEST_SKIP();
+    // test either OpenMP or Serial
+    if (!Info::has_accelerator_feature("KOKKOS", "api", "serial") &&
+        !Info::has_accelerator_feature("KOKKOS", "api", "openmp"))
+        GTEST_SKIP();
     // if KOKKOS has GPU support enabled, it *must* be used. We cannot test OpenMP only.
     if (Info::has_accelerator_feature("KOKKOS", "api", "cuda") ||
         Info::has_accelerator_feature("KOKKOS", "api", "hip") ||
@@ -559,6 +562,8 @@ TEST(AngleStyle, kokkos_omp)
 
     LAMMPS::argv args = {"AngleStyle", "-log", "none", "-echo", "screen", "-nocite",
                          "-k",         "on",   "t",    "4",     "-sf",    "kk"};
+    // fall back to serial if openmp is not available
+    if (!Info::has_accelerator_feature("KOKKOS", "api", "openmp")) args[9] = "1";
 
     ::testing::internal::CaptureStdout();
     LAMMPS *lmp = nullptr;
@@ -684,7 +689,7 @@ TEST(AngleStyle, kokkos_omp)
 
 TEST(AngleStyle, numdiff)
 {
-    if (!LAMMPS::is_installed_pkg("EXTRA-FIX")) GTEST_SKIP();
+    if (!Info::has_package("EXTRA-FIX")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
 
     LAMMPS::argv args = {"AngleStyle", "-log", "none", "-echo", "screen", "-nocite"};

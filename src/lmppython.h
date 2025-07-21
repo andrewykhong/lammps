@@ -20,11 +20,13 @@ namespace LAMMPS_NS {
 
 class PythonInterface {
  public:
-  virtual ~PythonInterface() noexcept(false) {}
+  virtual ~PythonInterface() noexcept(false) {
+  }    // NOLINT  Cannot use =default because of GCC 8 or RHEL 8
   virtual void command(int, char **) = 0;
-  virtual void invoke_function(int, char *) = 0;
+  virtual void invoke_function(int, char *, double *) = 0;
   virtual int find(const char *) = 0;
-  virtual int variable_match(const char *, const char *, int) = 0;
+  virtual int function_match(const char *, const char *, int, Error *) = 0;
+  virtual int wrapper_match(const char *, const char *, int, int *, Error *) = 0;
   virtual char *long_string(int ifunc) = 0;
   virtual int execute_string(char *) = 0;
   virtual int execute_file(char *) = 0;
@@ -37,9 +39,10 @@ class Python : protected Pointers {
   ~Python() override;
 
   void command(int, char **);
-  void invoke_function(int, char *);
+  void invoke_function(int, char *, double *);
   int find(const char *);
-  int variable_match(const char *, const char *, int);
+  int function_match(const char *, const char *, int, Error *);
+  int wrapper_match(const char *, const char *, int, int *, Error *);
   char *long_string(int ifunc);
   int execute_string(char *);
   int execute_file(char *);

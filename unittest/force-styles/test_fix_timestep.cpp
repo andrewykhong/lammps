@@ -269,7 +269,7 @@ void generate_yaml_file(const char *outfile, const TestConfig &config)
 
 TEST(FixTimestep, plain)
 {
-    if (!LAMMPS::is_installed_pkg("MOLECULE")) GTEST_SKIP();
+    if (!Info::has_package("MOLECULE")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
 #if defined(USING_STATIC_LIBS)
     if (test_config.skip_tests.count("static")) GTEST_SKIP();
@@ -446,10 +446,10 @@ TEST(FixTimestep, plain)
         !utils::strmatch(ifix->style, "^nve/limit") && !utils::strmatch(ifix->style, "^recenter")) {
         if (!verbose) ::testing::internal::CaptureStdout();
         cleanup_lammps(lmp, test_config);
+        delete lmp;
         if (!verbose) ::testing::internal::GetCapturedStdout();
 
         ::testing::internal::CaptureStdout();
-        LAMMPS *lmp = nullptr;
         try {
             lmp = init_lammps(args, test_config, true);
         } catch (std::exception &e) {
@@ -580,8 +580,8 @@ TEST(FixTimestep, plain)
 
 TEST(FixTimestep, omp)
 {
-    if (!LAMMPS::is_installed_pkg("OPENMP")) GTEST_SKIP();
-    if (!LAMMPS::is_installed_pkg("MOLECULE")) GTEST_SKIP();
+    if (!Info::has_package("OPENMP")) GTEST_SKIP();
+    if (!Info::has_package("MOLECULE")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
 #if defined(USING_STATIC_LIBS)
     if (test_config.skip_tests.count("static")) GTEST_SKIP();
@@ -758,6 +758,7 @@ TEST(FixTimestep, omp)
 
         if (!verbose) ::testing::internal::CaptureStdout();
         cleanup_lammps(lmp, test_config);
+        delete lmp;
         if (!verbose) ::testing::internal::GetCapturedStdout();
 
         ::testing::internal::CaptureStdout();
@@ -891,9 +892,12 @@ TEST(FixTimestep, omp)
 
 TEST(FixTimestep, kokkos_omp)
 {
-    if (!LAMMPS::is_installed_pkg("KOKKOS")) GTEST_SKIP();
+    if (!Info::has_package("KOKKOS")) GTEST_SKIP();
     if (test_config.skip_tests.count(test_info_->name())) GTEST_SKIP();
-    if (!Info::has_accelerator_feature("KOKKOS", "api", "openmp")) GTEST_SKIP();
+    // test either OpenMP or Serial
+    if (!Info::has_accelerator_feature("KOKKOS", "api", "serial") &&
+        !Info::has_accelerator_feature("KOKKOS", "api", "openmp"))
+        GTEST_SKIP();
     // if KOKKOS has GPU support enabled, it *must* be used. We cannot test OpenMP only.
     if (Info::has_accelerator_feature("KOKKOS", "api", "cuda") ||
         Info::has_accelerator_feature("KOKKOS", "api", "hip") ||
@@ -902,6 +906,8 @@ TEST(FixTimestep, kokkos_omp)
     }
     LAMMPS::argv args = {"FixTimestep", "-log", "none", "-echo", "screen", "-nocite",
                          "-k",          "on",   "t",    "4",     "-sf",    "kk"};
+    // fall back to serial if openmp is not available
+    if (!Info::has_accelerator_feature("KOKKOS", "api", "openmp")) args[9] = "1";
 
     ::testing::internal::CaptureStdout();
     LAMMPS *lmp = nullptr;

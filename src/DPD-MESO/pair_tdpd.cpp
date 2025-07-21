@@ -24,6 +24,7 @@
 #include "comm.h"
 #include "error.h"
 #include "force.h"
+#include "info.h"
 #include "memory.h"
 #include "neigh_list.h"
 #include "neighbor.h"
@@ -280,9 +281,9 @@ void PairTDPD::coeff(int narg, char **arg)
   double power_one = utils::numeric(FLERR,arg[4],false,lmp);
   double cut_one   = utils::numeric(FLERR,arg[5],false,lmp);
   double cutcc_one = utils::numeric(FLERR,arg[6],false,lmp);
-  auto kappa_one = new double[cc_species];
-  auto epsilon_one = new double[cc_species];
-  auto powercc_one = new double[cc_species];
+  auto *kappa_one = new double[cc_species];
+  auto *epsilon_one = new double[cc_species];
+  auto *powercc_one = new double[cc_species];
   for (int k=0; k<cc_species; k++) {
     kappa_one[k]   = utils::numeric(FLERR,arg[7+3*k],false,lmp);
     epsilon_one[k] = utils::numeric(FLERR,arg[8+3*k],false,lmp);
@@ -340,7 +341,9 @@ void PairTDPD::init_style()
 
 double PairTDPD::init_one(int i, int j)
 {
-  if (setflag[i][j] == 0) error->all(FLERR,"All pair coeffs are not set");
+  if (setflag[i][j] == 0)
+    error->all(FLERR, Error::NOLASTLINE,
+               "All pair coeffs are not set. Status:\n" + Info::get_pair_coeff_status(lmp));
 
   sigma[i][j] = sqrt(2.0*force->boltz*temperature*gamma[i][j]);
 

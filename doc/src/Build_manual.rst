@@ -57,6 +57,8 @@ Python interpreter version 3.8 or later, the ``doxygen`` tools and
 internet access to download additional files and tools are required.
 This download is usually only required once or after the documentation
 folder is returned to a pristine state with ``make clean-all``.
+You can also upgrade those packages to their latest available versions
+with ``make upgrade``.
 
 For the documentation build a python virtual environment is set up in
 the folder ``doc/docenv`` and various python packages are installed into
@@ -82,6 +84,7 @@ folder.  The following ``make`` commands are available:
 
    make clean         # remove intermediate RST files created by HTML build
    make clean-all     # remove entire build folder and any cached data
+   make upgrade       # upgrade the python packages in the virtual environment
 
    make anchor_check  # check for duplicate anchor labels
    make style_check   # check for complete and consistent style lists
@@ -221,9 +224,10 @@ HTML as a quick-n-dirty way of checking your manual page.
 
 This translation uses `Pandoc <https://pandoc.org>`_ instead of Sphinx
 and thus all special Sphinx features (cross-references, advanced tables,
-embedding of Python docstring and doxygen documentation, and so on) will
-not render correctly.  But this is a **very fast** way to check the content
-as HTML while writing the documentation.
+embedding of Python docstrings or doxygen documentation, and so on) will
+not render correctly.  Most embedded math should render correctly.  This
+is a **very fast** way to check the syntax and layout of a documentation
+file translated to HTML while writing or updating it.
 
 To translate **all** manual pages, you can type ``make fasthtml`` at the
 command line.  The translated HTML files are then in the ``fasthtml``
@@ -235,7 +239,7 @@ directly translate only individual pages: e.g. to translate only the
 
 After writing the documentation is completed, you will still need
 to verify with ``make html`` and ``make pdf`` that it translates
-correctly.
+correctly in both formats.
 
 Tests for consistency, completeness, and other known issues
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

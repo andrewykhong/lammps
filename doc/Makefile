@@ -99,8 +99,6 @@ html: xmlgen globbed-tocs $(VENV) $(SPHINXCONFIG)/conf.py $(ANCHORCHECK) $(MATHJ
 	@(\
 		. $(VENV)/bin/activate ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
 		sphinx-build -E $(SPHINXEXTRA) -b html -c $(SPHINXCONFIG) -d $(BUILDDIR)/doctrees $(RSTDIR) html ;\
-		touch $(RSTDIR)/Fortran.rst ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
-		sphinx-build $(SPHINXEXTRA) -b html -c $(SPHINXCONFIG) -d $(BUILDDIR)/doctrees $(RSTDIR) html ;\
 		ln -sf Manual.html html/index.html;\
 		rm -f $(BUILDDIR)/doxygen/xml/run.stamp;\
 		echo "############################################" ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
@@ -112,6 +110,8 @@ html: xmlgen globbed-tocs $(VENV) $(SPHINXCONFIG)/conf.py $(ANCHORCHECK) $(MATHJ
 		env LC_ALL=C grep -n ':\(ref\|doc\):[^`]' $(RSTDIR)/*.rst ;\
 		env LC_ALL=C grep -n '\(ref\|doc\)`[^`]' $(RSTDIR)/*.rst ;\
 		$(PYTHON) $(BUILDDIR)/utils/check-styles.py -s ../src -d src ;\
+		env LC_ALL=C grep -n -E '^ *\.\. [a-z0-9]+:(\s+.*|)$$' \
+                         $(RSTDIR)/*.rst ../src/*.{cpp,h} ../src/*/*.{cpp,h} ;\
 		echo "############################################" ;\
 		deactivate ;\
 	)
@@ -160,8 +160,6 @@ epub: xmlgen globbed-tocs $(VENV) $(SPHINXCONFIG)/conf.py $(ANCHORCHECK)
 	@(\
 		. $(VENV)/bin/activate ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
 		sphinx-build -E $(SPHINXEXTRA) -b epub -c $(SPHINXCONFIG) -d $(BUILDDIR)/doctrees $(RSTDIR) epub ;\
-		touch $(RSTDIR)/Fortran.rst ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
-		sphinx-build $(SPHINXEXTRA) -b epub -c $(SPHINXCONFIG) -d $(BUILDDIR)/doctrees $(RSTDIR) epub ;\
 		rm -f $(BUILDDIR)/doxygen/xml/run.stamp;\
 		deactivate ;\
 	)
@@ -181,8 +179,6 @@ pdf: xmlgen globbed-tocs $(VENV) $(SPHINXCONFIG)/conf.py $(ANCHORCHECK)
 	@(\
 		. $(VENV)/bin/activate ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
 		sphinx-build -E $(SPHINXEXTRA) -b latex -c $(SPHINXCONFIG) -d $(BUILDDIR)/doctrees $(RSTDIR) latex ;\
-		touch $(RSTDIR)/Fortran.rst ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
-		sphinx-build  $(SPHINXEXTRA) -b latex -c $(SPHINXCONFIG) -d $(BUILDDIR)/doctrees $(RSTDIR) latex ;\
 		rm -f $(BUILDDIR)/doxygen/xml/run.stamp;\
 		echo "############################################" ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
 		rst_anchor_check src/*.rst ;\
@@ -193,6 +189,8 @@ pdf: xmlgen globbed-tocs $(VENV) $(SPHINXCONFIG)/conf.py $(ANCHORCHECK)
 		env LC_ALL=C grep -n ':\(ref\|doc\):[^`]' $(RSTDIR)/*.rst ;\
 		env LC_ALL=C grep -n '\(ref\|doc\)`[^`]' $(RSTDIR)/*.rst ;\
 		$(PYTHON) utils/check-styles.py -s ../src -d src ;\
+		env LC_ALL=C grep -n -E '^ *\.\. [a-z0-9]+:(\s+.*|)$$' \
+                         $(RSTDIR)/*.rst ../src/*.{cpp,h} ../src/*/*.{cpp,h} ;\
 		echo "############################################" ;\
 		deactivate ;\
 	)
@@ -242,12 +240,23 @@ role_check :
 	@( env LC_ALL=C grep -n ' `[^`]\+<[a-z][^`]\+`[^_]' $(RSTDIR)/*.rst && exit 1 || : )
 	@( env LC_ALL=C grep -n ':\(ref\|doc\):[^`]' $(RSTDIR)/*.rst && exit 1 || : )
 	@( env LC_ALL=C grep -n '\(ref\|doc\)`[^`]' $(RSTDIR)/*.rst && exit 1 || : )
+	@( env LC_ALL=C grep -n -E '^ *\.\. [a-z0-9]+:(\s+.*|)$$' \
+                        $(RSTDIR)/*.rst ../src/*.{cpp,h} ../src/*/*.{cpp,h} && exit 1 || : )
 
 link_check : $(VENV) html
 	@(\
 		. $(VENV)/bin/activate ; env PYTHONWARNINGS= PYTHONDONTWRITEBYTECODE=1 \
 		linkchecker -F html --check-extern html/Manual.html ;\
 		deactivate ;\
+	)
+
+upgrade: $(VENV)
+	@(\
+		. $(VENV)/bin/activate; \
+		pip $(PIP_OPTIONS) install --upgrade pip; \
+		pip $(PIP_OPTIONS) install --upgrade wheel; \
+		pip $(PIP_OPTIONS) install --upgrade -r $(BUILDDIR)/utils/requirements.txt; \
+		deactivate;\
 	)
 
 xmlgen : doxygen/xml/index.xml
