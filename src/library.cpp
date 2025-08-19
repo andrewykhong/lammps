@@ -71,6 +71,9 @@
 /// string buffer for error messages of global errors
 static std::string lammps_last_global_errormessage;
 
+/// maximum number of groups
+static constexpr int LMP_MAX_GROUP = 32;
+
 using namespace LAMMPS_NS;
 
 // for printing the non-null pointer argument warning only once
@@ -1621,7 +1624,9 @@ int lammps_extract_setting(void *handle, const char *keyword)
   if (strcmp(keyword,"peri_flag") == 0) return lmp->atom->peri_flag;
 
   if (strcmp(keyword,"thermo_every") == 0) return lmp->output->thermo_every;
-  if (strcmp(keyword,"thermo_norm") == 0) return lmp->output->thermo->normflag;
+  if (lmp->output->thermo) {
+    if (strcmp(keyword,"thermo_norm") == 0) return lmp->output->thermo->normflag;
+  }
 
   return -1;
 }
@@ -1694,6 +1699,9 @@ int lammps_extract_global_datatype(void * /*handle*/, const char *name)
   if (strcmp(name,"special_lj") == 0) return LAMMPS_DOUBLE;
   if (strcmp(name,"special_coul") == 0) return LAMMPS_DOUBLE;
 
+  if (strcmp(name,"neigh_skin") == 0) return LAMMPS_DOUBLE;
+  if (strcmp(name,"neigh_cutmin") == 0) return LAMMPS_DOUBLE;
+  if (strcmp(name,"neigh_cutmax") == 0) return LAMMPS_DOUBLE;
   if (strcmp(name,"neigh_bondlist") == 0) return LAMMPS_INT_2D;
   if (strcmp(name,"neigh_anglelist") == 0) return LAMMPS_INT_2D;
   if (strcmp(name,"neigh_dihedrallist") == 0) return LAMMPS_INT_2D;
@@ -2050,6 +2058,18 @@ Get length of lists with :ref:`lammps_extract_setting() <extract_neighbor_settin
      - Type
      - Length
      - Description
+   * - neigh_skin
+     - double
+     - 1
+     - neighbor list skin
+   * - neigh_cutmin
+     - double
+     - 1
+     - minimum neighbor cutoff across all type pairs
+   * - neigh_cutmax
+     - double
+     - 1
+     - maximum neighbor cutoff across all type pairs
    * - neigh_bondlist
      - 2d int
      - nbondlist
@@ -2307,6 +2327,9 @@ void *lammps_extract_global(void *handle, const char *name)
 
   if (strcmp(name,"q_flag") == 0) return (void *) &lmp->atom->q_flag;
 
+  if (strcmp(name,"neigh_skin") == 0) return (void *) &lmp->neighbor->skin;
+  if (strcmp(name,"neigh_cutmin") == 0) return (void *) &lmp->neighbor->cutneighmin;
+  if (strcmp(name,"neigh_cutmax") == 0) return (void *) &lmp->neighbor->cutneighmax;
   if (strcmp(name,"neigh_bondlist") == 0) return (void *) lmp->neighbor->bondlist;
   if (strcmp(name,"neigh_anglelist") == 0) return (void *) lmp->neighbor->anglelist;
   if (strcmp(name,"neigh_dihedrallist") == 0) return (void *) lmp->neighbor->dihedrallist;
@@ -6230,7 +6253,7 @@ int lammps_create_atoms(void *handle, int n, const tagint *id, const int *type,
  *
 \verbatim embed:rst
 
-.. versionadded:: TBD
+.. versionadded:: 22Jul2025
 
 This function creates a new molecule template similar to the
 :doc:`molecule command <molecule>`, but uses JSON data passed
@@ -7168,9 +7191,15 @@ int lammps_id_name(void *handle, const char *category, int idx, char *buffer, in
       return 1;
     }
   } else if (strcmp(category,"group") == 0) {
-    if ((idx >= 0) && (idx < lmp->group->ngroup)) {
-      strncpy(buffer, lmp->group->names[idx], buf_size);
-      return 1;
+    // the list of groups may have "holes". So the available range is always 0 to 32
+    if ((idx >= 0) && (idx < LMP_MAX_GROUP)) {
+      if (lmp->group->names[idx]) {
+        strncpy(buffer, lmp->group->names[idx], buf_size);
+        return 1;
+      } else {
+        buffer[0] = '\0';
+        return 0;
+      }
     }
   } else if (strcmp(category,"molecule") == 0) {
     if ((idx >= 0) && (idx < lmp->atom->nmolecule)) {

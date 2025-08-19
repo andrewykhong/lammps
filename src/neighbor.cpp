@@ -2867,7 +2867,7 @@ void Neighbor::modify_params(int narg, char **arg)
           utils::bounds(FLERR,word,1,ntypes,nlo,nhi,error);
           for (k = nlo; k <= nhi; k++) {
             if (type2collection[k] != -1)
-              error->all(FLERR,"Type specified more than once in collection/type commnd");
+              error->all(FLERR,"Type specified more than once in collection/type command");
             type2collection[k] = i;
           }
         }
@@ -2877,7 +2877,7 @@ void Neighbor::modify_params(int narg, char **arg)
 
       for (i = 1; i <= ntypes; i++){
         if (type2collection[i] == -1) {
-          error->all(FLERR,"Type missing in collection/type commnd");
+          error->all(FLERR,"Type missing in collection/type command");
         }
       }
 
@@ -2995,6 +2995,30 @@ void Neighbor::build_collection(int istart)
       collection[i] = type2collection[type[i]];
     }
   }
+}
+
+/* ----------------------------------------------------------------------
+   look up existing non-skip half or full neighbor list (used for dump image autobond)
+------------------------------------------------------------------------- */
+
+NeighList *Neighbor::get_best_pair_list()
+{
+  // find a non-skip neighbor list containing either half or full pairwise interactions
+
+  int i;
+  for (i = 0; i < old_nrequest; ++i)
+    if (old_requests[i]->half && !old_requests[i]->skip) break;
+
+  // no half list found, try for full list
+  if (i >= old_nrequest) {
+    for (i = 0; i < old_nrequest; ++i)
+      if (old_requests[i]->full && !old_requests[i]->skip) break;
+  }
+
+  // no suitable list found
+  if ((i >= old_nrequest) || lists[i]->kokkos) return nullptr;
+
+  return lists[i];
 }
 
 /* ----------------------------------------------------------------------
